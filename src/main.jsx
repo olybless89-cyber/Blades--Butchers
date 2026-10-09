@@ -1,0 +1,41 @@
+import React from "react";
+import ReactDOM from "react-dom/client";
+import App from "./App.jsx";
+import "./index.css";
+
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("BladeOS crashed:", error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#F7F3EC", fontFamily: "Inter, sans-serif", padding: 24 }}>
+          <div style={{ maxWidth: 420, textAlign: "center" }}>
+            <h1 style={{ fontFamily: "Fraunces, serif", color: "#221C17", fontSize: 24, marginBottom: 8 }}>Something went wrong</h1>
+            <p style={{ color: "#8A8175", fontSize: 14, marginBottom: 20 }}>BladeOS hit an unexpected error. Reloading usually fixes it.</p>
+            <button onClick={() => window.location.reload()} style={{ background: "#7A2331", color: "#fff", border: 0, borderRadius: 8, padding: "10px 18px", fontWeight: 600, cursor: "pointer" }}>
+              Reload BladeOS
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <React.StrictMode>
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  </React.StrictMode>
+);
