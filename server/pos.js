@@ -8,7 +8,7 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { query, tx } from "./db.js";
 import { requirePerm, requireAuth, signPurpose, verifyPurpose } from "./auth.js";
-import { allocateStock } from "./stock.js";
+import { allocateStockUpTo } from "./stock.js";
 import { openTill, tillSummary, approvalLimits } from "./operations.js";
 import { can, UNLIMITED_APPROVER, DISCOUNT_REASONS, weakPin } from "../src/shared/permissions.js";
 import { ah, parse, audit, bad, notFound, conflict, HttpError, round3, fmtDateTime } from "./util.js";
@@ -41,169 +41,237 @@ export async function recordPayment(db, { orderId, method, amount, tendered = nu
     [orderId, method, amount, tendered, ref, tillId, userId]);
 }
 
+
+const lineSchema = z.object({
+  sku: z.string().min(1), qty: qtyNum, scale: z.boolean().optional(),
+  discount: discountSchema.optional(),
+  price: z.coerce.number().int().min(0).max(1e9).optional(),       // offline only: the price the till charged
+});
+export const saleSchema = z.object({
+  clientRef: z.string().trim().min(8).max(64).optional(),
+  customerId: id.nullable().optional(),
+  items: z.array(lineSchema).min(1).max(100),
+  discount: discountSchema.optional(),                               // whole-ticket discount, after line discounts
+  discountReason: z.string().trim().max(60).optional(),
+  overrideToken: z.string().max(2000).optional(),                     // a manager's PIN approval (POST /pos/authorize)
+  fulfilment: z.enum(["Walk-in", "Delivery"]).default("Walk-in"),
+  area: z.string().trim().max(60).optional(),
+  payments: z.array(z.object({
+    method: z.enum(METHODS), amount: z.coerce.number().int().positive().max(1e12),
+    tendered: z.coerce.number().int().positive().max(1e12).optional(),
+    ref: z.string().trim().max(60).optional().or(z.literal("")),
+  })).max(6).optional(),
+  payLater: z.boolean().optional(),
+  // Older clients: a single payment
+  paymentStatus: z.enum(["Paid", "Pending"]).optional(),
+  paymentMethod: z.enum(METHODS).optional(),
+  paymentRef: z.string().trim().max(60).optional().or(z.literal("")),
+});
+
+const dupOf = async (clientRef) => {
+  const d = (await query("SELECT code, total, change_given, offline_no FROM orders WHERE client_ref = $1", [clientRef])).rows[0];
+  return d ? { code: d.code, total: d.total, change: d.change_given, offlineNo: d.offline_no, duplicate: true } : null;
+};
+
+/**
+ * One sale. `off` = null for a live sale; for an uploaded offline sale { soldAt, offlineNo, tillCode, syncedBy }.
+ * Offline sales already happened — the customer paid and left — so instead of refusing, the server records them and
+ * flags what a manager should look at: stock the system didn't have, a price that had changed, a discount above
+ * the seller's limit, or no till session to put the cash in.
+ */
+export async function saveSale(seller, b, off) {
+  if (b.fulfilment === "Delivery" && !b.area) throw bad("Delivery orders need an area.");
+  const payLater = b.payLater ?? b.paymentStatus === "Pending";
+  if (b.clientRef) { const d = await dupOf(b.clientRef); if (d) return d; }
+  const flags = [];
+  const out = await tx(async (db) => {
+    let till = null;
+    if (!off) {
+      till = await openTill(db, seller.id);
+      if (!till) throw conflict("Open your till before selling.");
+    } else {
+      // The seller's till session that was open when the sale was made.
+      till = (off.tillCode && (await db.query("SELECT * FROM till_sessions WHERE code = $1 AND user_id = $2", [off.tillCode, seller.id])).rows[0])
+        || (await db.query(`SELECT * FROM till_sessions WHERE user_id = $1 AND opened_at <= $2 AND (closed_at IS NULL OR closed_at >= $2)
+                            ORDER BY opened_at DESC LIMIT 1`, [seller.id, off.soldAt])).rows[0] || null;
+      if (!till) flags.push("no till session was open — cash isn't in any cash-up");
+      else if (till.status !== "Open") flags.push(`till ${till.code} was already closed when this was uploaded — its cash-up didn't include this sale`);
+    }
+    let customer = null;
+    if (b.customerId) {
+      customer = (await db.query("SELECT * FROM customers WHERE id = $1", [b.customerId])).rows[0];
+      if (!customer) { if (!off) throw notFound("Customer not found."); flags.push("customer record no longer exists"); }
+    }
+    if (b.fulfilment === "Delivery" && !customer) throw bad("Pick a customer for delivery orders.");
+
+    const n = (await db.query("SELECT nextval('order_code_seq') AS n")).rows[0].n;
+    const code = `ORD-${n}`;
+    const skus = [...new Set(b.items.map((i) => i.sku))].sort();
+    // Offline: a product retired since the sale is still recorded — it was sold.
+    const prods = (await db.query(`SELECT * FROM products WHERE sku = ANY($1) ${off ? "" : "AND active"} ORDER BY sku FOR UPDATE`, [skus])).rows;
+    const bySku = Object.fromEntries(prods.map((p) => [p.sku, p]));
+
+    // 1. Price every line, then line discounts.
+    const lines = b.items.map((it) => {
+      const p = bySku[it.sku];
+      if (!p) throw notFound(`Product ${it.sku} not found.`);
+      if (p.unit !== "KG" && !Number.isInteger(it.qty)) throw bad(`${p.name} must be sold in whole ${p.unit.toLowerCase()}s.`);
+      const qty = round3(it.qty);
+      const price = off && it.price != null ? it.price : p.price;
+      if (off && it.price != null && it.price !== p.price) flags.push(`${p.name} sold at ${naira(it.price)} (price now ${naira(p.price)})`);
+      const gross = Math.round(qty * price);
+      const lineDisc = discountAmount(it.discount, gross);
+      return { p, price, qty, gross, discount: lineDisc, scale: p.unit === "KG" && it.scale === true };
+    });
+    const gross = lines.reduce((s, l) => s + l.gross, 0);
+    // 2. Ticket discount, spread across lines in proportion (so refunds give back what was actually paid).
+    const afterLines = lines.reduce((s, l) => s + l.gross - l.discount, 0);
+    const ticketDisc = discountAmount(b.discount, afterLines);
+    if (ticketDisc > 0) {
+      let left = ticketDisc;
+      lines.forEach((l, i) => {
+        const base = l.gross - l.discount;
+        const share = i === lines.length - 1 ? left : Math.min(left, Math.round((ticketDisc * base) / afterLines));
+        l.discount += share; left -= share;
+      });
+    }
+    const discountTotal = lines.reduce((s, l) => s + l.discount, 0);
+    const total = gross - discountTotal;
+
+    // 3. Who authorised the discount?
+    let discountBy = null;
+    if (discountTotal > 0) {
+      if (!b.discountReason || !DISCOUNT_REASONS.includes(b.discountReason)) throw bad("Pick a reason for the discount.");
+      const pct = (discountTotal / gross) * 100;
+      const own = await discountAuthority(db, seller.roles);
+      if (pct <= own + 1e-9) discountBy = seller.id;
+      else if (off) {
+        discountBy = seller.id;
+        flags.push(`${pct.toFixed(1)}% discount is above ${seller.name}'s ${own}% limit and had no manager approval`);
+      } else {
+        if (!b.overrideToken) {
+          throw new HttpError(403, own ? `A ${pct.toFixed(1)}% discount is above your ${own}% limit — a manager must approve it.` : "Discounts need a manager's approval.");
+        }
+        let c;
+        try { c = verifyPurpose(b.overrideToken, "pos-override"); } catch { throw new HttpError(403, "The manager approval has expired — ask again."); }
+        if (c.cashier !== seller.id) throw new HttpError(403, "That approval was for another till.");
+        if (pct > c.maxPct + 1e-9) throw new HttpError(403, `The approving manager can authorise up to ${c.maxPct}% — this is ${pct.toFixed(1)}%.`);
+        discountBy = c.approver;
+      }
+    }
+
+    // 4. VAT (prices include it).
+    for (const l of lines) {
+      l.subtotal = l.gross - l.discount;
+      l.vat = Number(l.p.vat_rate) || 0;
+      l.tax = l.vat ? Math.round((l.subtotal * l.vat) / (100 + l.vat)) : 0;
+    }
+    const taxTotal = lines.reduce((s, l) => s + l.tax, 0);
+
+    // 5. Tenders.
+    let payments = b.payments || [];
+    if (!payments.length && !payLater && b.paymentStatus !== "Pending") {
+      payments = [{ method: b.paymentMethod ?? "Cash", amount: total, ref: b.paymentRef }]; // legacy single payment
+    }
+    if (payLater && payments.length) throw bad("A pay-later order can't also take payment now.");
+    let change = 0;
+    if (!payLater) {
+      const paid = payments.reduce((s, p) => s + p.amount, 0);
+      if (total === 0 && payments.length) throw bad("Nothing to pay on this ticket.");
+      if (paid !== total) throw bad(`Payments (${naira(paid)}) must add up to the total (${naira(total)}).`);
+      for (const p of payments) {
+        if (p.tendered != null && p.method !== "Cash") throw bad("Only cash has change.");
+        if (p.tendered != null && p.tendered < p.amount) throw bad("Cash tendered is less than the amount.");
+        change += p.tendered != null ? p.tendered - p.amount : 0;
+      }
+    }
+    const methods = [...new Set(payments.map((p) => p.method))];
+    const method = payLater ? (b.paymentMethod ?? null) : methods.length === 1 ? methods[0] : methods.length ? "Split" : null;
+    const hasCash = payments.some((p) => p.method === "Cash");
+    const firstRef = payments.find((p) => p.method !== "Cash" && p.ref)?.ref || null;
+    const paid = !payLater;
+
+    // 6. Stock (counter first, earliest use-by; expired never sold). Offline sales take what the system has.
+    for (const l of lines) {
+      const r = await allocateStockUpTo(db, { sku: l.p.sku, qty: l.qty, kind: "sale", reference: code, userId: seller.id, allowShort: !!off });
+      l.allocations = r.allocations; l.short = r.short;
+      if (r.short > 0) flags.push(`${l.p.name}: sold ${round3(r.short)} ${l.p.unit} more than the system showed — count it`);
+    }
+    const at = off ? off.soldAt : null;
+    const isDelivery = b.fulfilment === "Delivery";
+    const { rows } = await db.query(
+      `INSERT INTO orders (code, customer_id, channel, status, payment_status, payment_method, total, area, user_id, till_session_id, cash_session_id,
+         paid_at, payment_ref, gross_total, discount_total, discount_reason, discount_by, tax_total, change_given, client_ref,
+         created_at, offline_no, synced_at, synced_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, CASE WHEN $5 = 'Paid' THEN COALESCE($20::timestamptz, now()) END, $12,$13,$14,$15,$16,$17,$18,$19,
+         COALESCE($20::timestamptz, now()), $21, $22, $23) RETURNING id`,
+      [code, customer?.id ?? null, isDelivery ? "Delivery" : "POS", isDelivery ? "Confirmed" : "Delivered",
+       paid ? "Paid" : "Pending", method, total, isDelivery ? b.area : "Walk-in", seller.id, till?.id ?? null, hasCash ? till?.id ?? null : null,
+       firstRef, gross, discountTotal, discountTotal ? b.discountReason : null, discountBy, taxTotal, change, b.clientRef ?? null,
+       at, off?.offlineNo ?? null, off ? new Date() : null, off ? off.syncedBy.id : null]);
+    const orderId = rows[0].id;
+    for (const l of lines) {
+      await db.query(
+        `INSERT INTO order_items (order_id, product_sku, qty, unit_price, subtotal, allocations, scale_weighed, discount, vat_rate, tax, offline_short)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [orderId, l.p.sku, l.qty, l.price, l.subtotal, JSON.stringify(l.allocations), l.scale, l.discount, l.vat, l.tax, l.short || 0]);
+    }
+    for (const p of payments) {
+      await db.query("INSERT INTO order_payments (order_id, method, amount, tendered, ref, till_session_id, user_id, paid_at) VALUES ($1,$2,$3,$4,$5,$6,$7, COALESCE($8::timestamptz, now()))",
+        [orderId, p.method, p.amount, p.method === "Cash" ? (p.tendered ?? p.amount) : null, p.method === "Cash" ? null : p.ref || null, till?.id ?? null, seller.id, at]);
+    }
+    const tenders = payments.map((p) => `${p.method} ${naira(p.amount)}`).join(" + ");
+    const label = off ? `Offline sale ${code} (${off.offlineNo})` : `Sale ${code}`;
+    await audit(db, seller.id, label, `${naira(total)} · ${customer?.name ?? "Walk-in"} · ${paid ? tenders : "Pending"}${change ? ` · change ${naira(change)}` : ""}${off ? ` · sold ${fmtDateTime(at)}, uploaded by ${off.syncedBy.name}` : ""}`);
+    if (discountTotal) {
+      await audit(db, discountBy, `Discount on ${code}`, `${naira(discountTotal)} (${((discountTotal / gross) * 100).toFixed(1)}%) · ${b.discountReason}${discountBy !== seller.id ? ` · approved for ${seller.name}` : ""}`);
+    }
+    if (flags.length) {
+      await db.query("UPDATE orders SET offline_flags = $2 WHERE id = $1", [orderId, flags.join("; ")]);
+      await audit(db, seller.id, `Offline sale ${code} needs a look`, flags.join("; "));
+    }
+    return { code, total, gross, discount: discountTotal, tax: taxTotal, change, paymentMethod: method, offlineNo: off?.offlineNo, flags };
+  }).catch((e) => {
+    // Two taps racing with the same clientRef: the loser reports the winner's sale.
+    if (e.code === "23505" && b.clientRef) return null;
+    throw e;
+  });
+  return out ?? (await dupOf(b.clientRef));
+}
+
 export function posRoutes(r) {
   /* ---------------------------------------------------------- the sale */
   r.post("/sales", requirePerm("pos.use"), ah(async (req, res) => {
-    const b = parse(z.object({
-      clientRef: z.string().trim().min(8).max(64).optional(),
-      customerId: id.nullable().optional(),
-      items: z.array(z.object({
-        sku: z.string().min(1), qty: qtyNum, scale: z.boolean().optional(),
-        discount: discountSchema.optional(),
-      })).min(1).max(100),
-      discount: discountSchema.optional(),                               // whole-ticket discount, after line discounts
-      discountReason: z.string().trim().max(60).optional(),
-      overrideToken: z.string().max(2000).optional(),                     // a manager's PIN approval (POST /pos/authorize)
-      fulfilment: z.enum(["Walk-in", "Delivery"]).default("Walk-in"),
-      area: z.string().trim().max(60).optional(),
-      payments: z.array(z.object({
-        method: z.enum(METHODS), amount: z.coerce.number().int().positive().max(1e12),
-        tendered: z.coerce.number().int().positive().max(1e12).optional(),
-        ref: z.string().trim().max(60).optional().or(z.literal("")),
-      })).max(6).optional(),
-      payLater: z.boolean().optional(),
-      // Older clients: a single payment
-      paymentStatus: z.enum(["Paid", "Pending"]).optional(),
-      paymentMethod: z.enum(METHODS).optional(),
-      paymentRef: z.string().trim().max(60).optional().or(z.literal("")),
+    const b = parse(saleSchema, req.body);
+    const out = await saveSale(req.user, b, null);
+    res.status(out.duplicate ? 200 : 201).json(out);
+  }));
+
+  /**
+   * Sales made while the till had no internet, uploaded when it's back. Each keeps the time it was made, the till session
+   * that was open, the price the customer was charged and the receipt number printed (e.g. T1-000123).
+   * Uploaded by the seller, or by a manager on their behalf (when the seller has gone home).
+   */
+  r.post("/pos/offline-sales", requirePerm("pos.use"), ah(async (req, res) => {
+    const b = parse(saleSchema.extend({
+      clientRef: z.string().trim().min(8).max(64),
+      offlineNo: z.string().trim().min(2).max(30),
+      soldAt: z.string().datetime({ offset: true }),
+      sellerId: id,
+      tillCode: z.string().trim().max(30).optional().nullable(),
     }), req.body);
-    if (b.fulfilment === "Delivery" && !b.area) throw bad("Delivery orders need an area.");
-    const payLater = b.payLater ?? b.paymentStatus === "Pending";
-
-    // Same tap retried (network blip): return the sale already made, never charge twice.
-    if (b.clientRef) {
-      const dup = (await query("SELECT code, total, change_given FROM orders WHERE client_ref = $1", [b.clientRef])).rows[0];
-      if (dup) return res.status(200).json({ code: dup.code, total: dup.total, change: dup.change_given, duplicate: true });
+    const soldAt = new Date(b.soldAt);
+    if (soldAt.getTime() > Date.now() + 10 * 60e3) throw bad("That sale is dated in the future — check the till's clock.");
+    if (soldAt.getTime() < Date.now() - 14 * 864e5) throw bad("Offline sales older than 14 days can't be uploaded — a manager must enter them.");
+    let seller = req.user;
+    if (b.sellerId !== req.user.id) {
+      if (!can(req.user.roles, "till.review")) throw new HttpError(403, "Only the seller or a manager can upload these sales.");
+      seller = (await query("SELECT * FROM users WHERE id = $1", [b.sellerId])).rows[0];
+      if (!seller) throw notFound("The seller's account no longer exists.");
+      seller.roles = [seller.role, ...(seller.extra_roles || [])];
     }
-
-    const out = await tx(async (db) => {
-      const till = await openTill(db, req.user.id);
-      if (!till) throw conflict("Open your till before selling.");
-      let customer = null;
-      if (b.customerId) {
-        customer = (await db.query("SELECT * FROM customers WHERE id = $1", [b.customerId])).rows[0];
-        if (!customer) throw notFound("Customer not found.");
-      }
-      if (b.fulfilment === "Delivery" && !customer) throw bad("Pick a customer for delivery orders.");
-
-      const n = (await db.query("SELECT nextval('order_code_seq') AS n")).rows[0].n;
-      const code = `ORD-${n}`;
-      const skus = [...new Set(b.items.map((i) => i.sku))].sort();
-      const prods = (await db.query("SELECT * FROM products WHERE sku = ANY($1) AND active ORDER BY sku FOR UPDATE", [skus])).rows;
-      const bySku = Object.fromEntries(prods.map((p) => [p.sku, p]));
-
-      // 1. Price every line, then line discounts.
-      const lines = b.items.map((it) => {
-        const p = bySku[it.sku];
-        if (!p) throw notFound(`Product ${it.sku} not found.`);
-        if (p.unit !== "KG" && !Number.isInteger(it.qty)) throw bad(`${p.name} must be sold in whole ${p.unit.toLowerCase()}s.`);
-        const qty = round3(it.qty);
-        const gross = Math.round(qty * p.price);
-        const lineDisc = discountAmount(it.discount, gross);
-        return { p, qty, gross, discount: lineDisc, scale: p.unit === "KG" && it.scale === true };
-      });
-      const gross = lines.reduce((s, l) => s + l.gross, 0);
-      // 2. Ticket discount, spread across lines in proportion (so refunds give back what was actually paid).
-      const afterLines = lines.reduce((s, l) => s + l.gross - l.discount, 0);
-      const ticketDisc = discountAmount(b.discount, afterLines);
-      if (ticketDisc > 0) {
-        let left = ticketDisc;
-        lines.forEach((l, i) => {
-          const base = l.gross - l.discount;
-          const share = i === lines.length - 1 ? left : Math.min(left, Math.round((ticketDisc * base) / afterLines));
-          l.discount += share; left -= share;
-        });
-      }
-      const discountTotal = lines.reduce((s, l) => s + l.discount, 0);
-      const total = gross - discountTotal;
-
-      // 3. Who authorised the discount?
-      let discountBy = null;
-      if (discountTotal > 0) {
-        if (!b.discountReason || !DISCOUNT_REASONS.includes(b.discountReason)) throw bad("Pick a reason for the discount.");
-        const pct = (discountTotal / gross) * 100;
-        const own = await discountAuthority(db, req.user.roles);
-        if (pct <= own + 1e-9) discountBy = req.user.id;
-        else {
-          if (!b.overrideToken) {
-            throw new HttpError(403, own ? `A ${pct.toFixed(1)}% discount is above your ${own}% limit — a manager must approve it.` : "Discounts need a manager's approval.");
-          }
-          let c;
-          try { c = verifyPurpose(b.overrideToken, "pos-override"); } catch { throw new HttpError(403, "The manager approval has expired — ask again."); }
-          if (c.cashier !== req.user.id) throw new HttpError(403, "That approval was for another till.");
-          if (pct > c.maxPct + 1e-9) throw new HttpError(403, `The approving manager can authorise up to ${c.maxPct}% — this is ${pct.toFixed(1)}%.`);
-          discountBy = c.approver;
-        }
-      }
-
-      // 4. VAT (prices include it).
-      for (const l of lines) {
-        l.subtotal = l.gross - l.discount;
-        l.vat = Number(l.p.vat_rate) || 0;
-        l.tax = l.vat ? Math.round((l.subtotal * l.vat) / (100 + l.vat)) : 0;
-      }
-      const taxTotal = lines.reduce((s, l) => s + l.tax, 0);
-
-      // 5. Tenders.
-      let payments = b.payments || [];
-      if (!payments.length && !payLater && b.paymentStatus !== "Pending") {
-        payments = [{ method: b.paymentMethod ?? "Cash", amount: total, ref: b.paymentRef }]; // legacy single payment
-      }
-      if (payLater && payments.length) throw bad("A pay-later order can't also take payment now.");
-      let change = 0;
-      if (!payLater) {
-        const paid = payments.reduce((s, p) => s + p.amount, 0);
-        if (total === 0 && payments.length) throw bad("Nothing to pay on this ticket.");
-        if (paid !== total) throw bad(`Payments (${naira(paid)}) must add up to the total (${naira(total)}).`);
-        for (const p of payments) {
-          if (p.tendered != null && p.method !== "Cash") throw bad("Only cash has change.");
-          if (p.tendered != null && p.tendered < p.amount) throw bad("Cash tendered is less than the amount.");
-          change += p.tendered != null ? p.tendered - p.amount : 0;
-        }
-      }
-      const methods = [...new Set(payments.map((p) => p.method))];
-      const method = payLater ? (b.paymentMethod ?? null) : methods.length === 1 ? methods[0] : methods.length ? "Split" : null;
-      const hasCash = payments.some((p) => p.method === "Cash");
-      const firstRef = payments.find((p) => p.method !== "Cash" && p.ref)?.ref || null;
-      const paid = !payLater;
-
-      // 6. Stock (counter first, earliest use-by; expired never sold), then the order.
-      for (const l of lines) l.allocations = await allocateStock(db, { sku: l.p.sku, qty: l.qty, kind: "sale", reference: code, userId: req.user.id });
-      const isDelivery = b.fulfilment === "Delivery";
-      const { rows } = await db.query(
-        `INSERT INTO orders (code, customer_id, channel, status, payment_status, payment_method, total, area, user_id, till_session_id, cash_session_id,
-           paid_at, payment_ref, gross_total, discount_total, discount_reason, discount_by, tax_total, change_given, client_ref)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, CASE WHEN $5 = 'Paid' THEN now() END, $12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
-        [code, customer?.id ?? null, isDelivery ? "Delivery" : "POS", isDelivery ? "Confirmed" : "Delivered",
-         paid ? "Paid" : "Pending", method, total, isDelivery ? b.area : "Walk-in", req.user.id, till.id, hasCash ? till.id : null,
-         firstRef, gross, discountTotal, discountTotal ? b.discountReason : null, discountBy, taxTotal, change, b.clientRef ?? null]);
-      const orderId = rows[0].id;
-      for (const l of lines) {
-        await db.query(
-          `INSERT INTO order_items (order_id, product_sku, qty, unit_price, subtotal, allocations, scale_weighed, discount, vat_rate, tax)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-          [orderId, l.p.sku, l.qty, l.p.price, l.subtotal, JSON.stringify(l.allocations), l.scale, l.discount, l.vat, l.tax]);
-      }
-      for (const p of payments) {
-        await recordPayment(db, { orderId, method: p.method, amount: p.amount, tendered: p.method === "Cash" ? (p.tendered ?? p.amount) : null,
-          ref: p.method === "Cash" ? null : p.ref || null, tillId: till.id, userId: req.user.id });
-      }
-      const tenders = payments.map((p) => `${p.method} ${naira(p.amount)}`).join(" + ");
-      await audit(db, req.user.id, `Sale ${code}`, `${naira(total)} · ${customer?.name ?? "Walk-in"} · ${paid ? tenders : "Pending"}${change ? ` · change ${naira(change)}` : ""}`);
-      if (discountTotal) {
-        await audit(db, discountBy, `Discount on ${code}`, `${naira(discountTotal)} (${((discountTotal / gross) * 100).toFixed(1)}%) · ${b.discountReason}${discountBy !== req.user.id ? ` · approved for ${req.user.name}` : ""}`);
-      }
-      return { code, total, gross, discount: discountTotal, tax: taxTotal, change, paymentMethod: method };
-    }).catch((e) => {
-      // Two taps racing with the same clientRef: the loser reports the winner's sale.
-      if (e.code === "23505" && b.clientRef) return null;
-      throw e;
-    });
-    if (!out) {
-      const dup = (await query("SELECT code, total, change_given FROM orders WHERE client_ref = $1", [b.clientRef])).rows[0];
-      return res.status(200).json({ code: dup.code, total: dup.total, change: dup.change_given, duplicate: true });
-    }
-    res.status(201).json(out);
+    const out = await saveSale(seller, b, { soldAt, offlineNo: b.offlineNo, tillCode: b.tillCode, syncedBy: req.user });
+    res.status(out.duplicate ? 200 : 201).json(out);
   }));
 
   /* ---------------------------------------------------------- manager override (PIN) */

@@ -183,7 +183,7 @@ async function processing() {
 
 async function orders(limit = 300, where = "TRUE") {
   const rows = await many(`
-    SELECT o.code, o.channel, o.status, o.payment_status, o.total, o.refunded, o.area, o.created_at, c.id AS customer_id, c.name AS customer,
+    SELECT o.code, o.channel, o.status, o.payment_status, o.total, o.refunded, o.area, o.created_at, o.offline_no, c.id AS customer_id, c.name AS customer,
       (SELECT string_agg(p.name, ', ' ORDER BY oi.id) FROM order_items oi JOIN products p ON p.sku = oi.product_sku WHERE oi.order_id = o.id) AS products,
       (SELECT sum(oi.qty) FROM order_items oi WHERE oi.order_id = o.id) AS qty
     FROM orders o LEFT JOIN customers c ON c.id = o.customer_id
@@ -191,7 +191,7 @@ async function orders(limit = 300, where = "TRUE") {
     ORDER BY o.created_at DESC, o.id DESC LIMIT ${Number(limit)}`);
   return rows.map((o) => ({
     id: o.code, customerId: o.customer_id, customer: o.customer ?? "Walk-in Customer", product: o.products ?? "—", qty: o.qty,
-    amount: o.total, refunded: o.refunded, payment: o.payment_status, status: o.status, channel: o.channel, area: o.area ?? "—", date: fmtDate(o.created_at),
+    amount: o.total, refunded: o.refunded, payment: o.payment_status, status: o.status, channel: o.channel, area: o.area ?? "—", date: fmtDate(o.created_at), offlineNo: o.offline_no,
   }));
 }
 
@@ -403,6 +403,16 @@ async function notifications(user) {
   if (can(roles, "counts.perform")) {
     const due = await one(`SELECT count(*)::int AS n FROM stock_counts WHERE status = 'Open' AND due_on <= ${TODAY}`);
     if (due.n) out.push({ icon: "ClipboardList", tone: "burgundy", route: "inventory", text: `${due.n} stock count${due.n === 1 ? " is" : "s are"} due.` });
+  }
+  if (can(roles, "till.review") || can(roles, "counts.schedule")) {
+    // Sales uploaded from a till that was offline, where the system had less stock than was sold.
+    const short = await many(`SELECT DISTINCT p.name FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN products p ON p.sku = oi.product_sku
+      WHERE oi.offline_short > 0 AND o.synced_at > now() - interval '7 days' ORDER BY p.name`);
+    if (short.length) out.push({ icon: "ClipboardList", tone: "warn", route: "inventory", text: `Sold offline beyond recorded stock: ${short.map((x) => x.name).join(", ")} — schedule a count.` });
+    const up = await one(`SELECT count(*)::int AS n, COALESCE(sum(total), 0) AS v FROM orders WHERE synced_at > now() - interval '24 hours'`);
+    if (up.n) out.push({ icon: "DollarSign", tone: "muted", route: "orders", text: `${up.n} sale${up.n === 1 ? "" : "s"} (${naira(up.v)}) uploaded from a till that was offline in the last 24 hours.` });
+    const look = await one(`SELECT count(*)::int AS n FROM orders WHERE offline_flags IS NOT NULL AND synced_at > now() - interval '7 days'`);
+    if (look.n) out.push({ icon: "AlertTriangle", tone: "danger", route: "orders", text: `${look.n} sale${look.n === 1 ? "" : "s"} uploaded from an offline till with something to check (price, till or customer) — open the order.` });
   }
   if (can(roles, "till.review")) {
     const t = await one(`SELECT count(*)::int AS n FROM till_sessions WHERE status = 'Closed' AND user_id <> $1`, [user.id]);

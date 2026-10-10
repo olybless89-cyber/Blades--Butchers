@@ -21,6 +21,12 @@ import { ApprovalsView } from "./views/Approvals.jsx";
 import { MfaStep, MfaEnrol } from "./views/Security.jsx";
 import { PurchasesView, PaymentsView, FoodSafetyView } from "./views/Business.jsx";
 import { ScaleProvider } from "./lib/scale.jsx";
+import { OfflineSignIn, OfflineLock, OfflineBanner, SyncModal, OfflinePinModal, UpdateBanner } from "./views/Offline.jsx";
+import { priceTicket } from "./views/POS.jsx";
+import {
+  saveSnapshot, loadSnapshot, setOnline, onSync, syncNow, syncStatus, outbox, nextOfflineNo, offlineAgeHours, OFFLINE_STOP_HOURS,
+  initOfflineStatus, persistStorage, kv, withPending, pendingSalesFor, clone,
+} from "./lib/offline.js";
 
 const NAV = [
   { section: "Overview", items: [
@@ -72,24 +78,71 @@ export default function App() {
   const [mfaOpen, setMfaOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const [reportTab, setReportTab] = useState(null);
+  // Offline mode
+  const [sync, setSync] = useState(syncStatus());
+  const [offlineSession, setOfflineSession] = useState(false); // signed in on this till with the offline PIN (no server session)
+  const [offlineGate, setOfflineGate] = useState(false);       // no internet at start-up: offer offline sign-in
+  const [locked, setLocked] = useState(false);
+  const [syncOpen, setSyncOpen] = useState(false);
+  const [offPinOpen, setOffPinOpen] = useState(false);
+  const userRef = useRef(null); userRef.current = user;
+  const dataRef = useRef(null); dataRef.current = data;
+  useEffect(() => { initOfflineStatus(); persistStorage(); return onSync(setSync); }, []);
+  useEffect(() => {
+    const off = () => setOnline(false);
+    window.addEventListener("offline", off);
+    return () => window.removeEventListener("offline", off);
+  }, []);
 
   const notify = useCallback((message, kind = "ok") => setToast({ message, kind, at: Date.now() }), []);
 
   const refresh = useCallback(async () => {
     try {
       const s = await api("/state");
-      setData(s);
+      if (userRef.current) saveSnapshot(userRef.current, s);
+      // Sales not uploaded yet and tickets parked offline still show at the till.
+      setData(await withPending(s, userRef.current?.id));
       setLoadError(null);
+      await setOnline(true);
     } catch (e) {
-      if (e.status !== 401) setLoadError(e.message);
+      if (e.status === 0) {
+        // No internet: carry on with the copy saved on this till.
+        await setOnline(false);
+        if (!dataRef.current && userRef.current) {
+          const snap = await loadSnapshot(userRef.current.id);
+          if (snap) { setData(await withPending(snap.state, userRef.current.id)); setLoadError(null); return; }
+        }
+        if (!dataRef.current) setLoadError("No internet, and this till has no saved copy of BladeOS yet. Connect once to set it up.");
+      } else if (e.status !== 401) setLoadError(e.message);
     }
   }, []);
 
   // Session check on load; any 401 later sends the user back to sign-in.
   useEffect(() => {
     setUnauthorizedHandler(() => { setUser(null); setData(null); });
-    api("/auth/me").then((r) => setUser(r.user)).catch(() => setUser(null));
+    api("/auth/me").then((r) => setUser(r.user)).catch(async (e) => {
+      if (e.status === 0) { await setOnline(false); setOfflineGate(true); }
+      setUser(null);
+    });
   }, []);
+
+  // Upload anything done offline: on start, when the internet returns, and every 20 s while something is waiting.
+  useEffect(() => {
+    if (!user || offlineSession || user.mustChangePassword || user.mfaSetupRequired) return;
+    const go = () => syncNow(user, { canUploadForOthers: can(user.roles, "till.review") }).then((n) => { if (n) refresh(); });
+    go();
+    const t = setInterval(() => { const st = syncStatus(); if (st.pending && !st.syncing) go(); }, 20000);
+    window.addEventListener("online", go);
+    return () => { clearInterval(t); window.removeEventListener("online", go); };
+  }, [user, offlineSession, refresh]);
+  // While offline, check for the internet every 15 s.
+  useEffect(() => {
+    if (!user || sync.online) return;
+    const check = () => { if (offlineSession) fetch("/health", { cache: "no-store" }).then((r) => { if (r.ok) setOnline(true); }).catch(() => {}); else refresh(); };
+    const t = setInterval(check, 15000);
+    window.addEventListener("online", check);   // Windows says the network is back: check straight away
+    return () => { clearInterval(t); window.removeEventListener("online", check); };
+  }, [user, sync.online, offlineSession, refresh]);
 
   useEffect(() => { if (user && !user.mustChangePassword && !user.mfaSetupRequired) refresh(); }, [user, refresh]);
 
@@ -102,13 +155,15 @@ export default function App() {
     evs.forEach((e) => window.addEventListener(e, bump, { passive: true }));
     const t = setInterval(async () => {
       if (Date.now() - last > IDLE_MINUTES * 60000) {
+        // Offline the till can't sign back in with a password, so it locks instead (unlock with the offline PIN).
+        if (offlineSession || !syncStatus().online) { setLocked(true); last = Date.now(); return; }
         await api("/auth/logout", { method: "POST" }).catch(() => {});
         setUser(null); setData(null); setRoute(null);
         setToast({ message: `Signed out after ${IDLE_MINUTES} minutes of inactivity.`, kind: "ok", at: Date.now() });
       }
     }, 30000);
     return () => { clearInterval(t); evs.forEach((e) => window.removeEventListener(e, bump)); };
-  }, [user]);
+  }, [user, offlineSession]);
 
   // Keep figures fresh across tills and screens.
   useEffect(() => {
@@ -140,10 +195,43 @@ export default function App() {
       await refresh();
       return res ?? true;
     } catch (e) {
+      if (e.status === 0) { await setOnline(false); notify("You're offline — this needs the internet. Sales and checklists still work.", "error"); return null; }
       notify(e.message, "error");
       return null;
     }
   }, [notify, refresh]);
+
+  /* ---------------------------------------------------------------- offline versions of counter actions */
+  const isOffline = () => offlineSession || !syncStatus().online;
+  const patchData = (fn) => setData((d) => { if (!d) return d; const n = clone(d); fn(n); return n; });
+  const queue = async (kind, payload, label) => {
+    await outbox.add({ kind, payload, label, userId: user.id, userName: user.name });
+  };
+  const offlineSale = async (body) => {
+    if ((await offlineAgeHours()) > OFFLINE_STOP_HOURS) { notify(`This till has been offline for over ${OFFLINE_STOP_HOURS} hours. Connect to the internet to upload before selling more.`, "error"); return null; }
+    if (body.payLater) { notify("Pay later needs the internet — take payment now.", "error"); return null; }
+    const inv = Object.fromEntries((dataRef.current?.inventory || []).map((p) => [p.sku, p]));
+    const items = body.items.map((i) => ({ ...i, price: inv[i.sku]?.price ?? 0 }));
+    const priced = priceTicket(items.map((i) => ({ ...i, price: i.price })), body.discount, (sku) => inv[sku]?.vatRate || 0);
+    const payments = body.payments || [];
+    const change = payments.reduce((sum, p) => sum + (p.tendered ? p.tendered - p.amount : 0), 0);
+    const offlineNo = nextOfflineNo();
+    const payload = { ...body, items, offlineNo, soldAt: new Date().toISOString(), sellerId: user.id, tillCode: dataRef.current?.tills?.mine?.code ?? null };
+    delete payload.overrideToken;
+    await queue("sale", payload, `${offlineNo} · ₦${priced.total.toLocaleString("en-NG")}`);
+    // Keep the screen honest until it syncs: less stock, one more sale.
+    patchData((d) => {
+      for (const it of items) {
+        const p = d.inventory?.find((x) => x.sku === it.sku);
+        if (p) { p.qty = Math.max(0, Math.round((p.qty - it.qty) * 1000) / 1000); p.sellable = Math.max(0, Math.round(((p.sellable ?? p.qty) - it.qty) * 1000) / 1000); }
+      }
+      if (d.tills?.mine) d.tills.mine.sales += 1;
+    });
+    const methods = [...new Set(payments.map((p) => p.method))];
+    notify(`Sale ${offlineNo} saved on this till — it uploads when the internet is back`);
+    return { code: offlineNo, offlineNo, total: priced.total, gross: priced.gross, discount: priced.discount, tax: priced.tax, change, offline: true,
+      paymentMethod: methods.length === 1 ? methods[0] : "Split" };
+  };
 
   const actions = {
     addAnimal: (body) => act(() => api("/livestock", { method: "POST", body }), (r) => `${r.code} added to the livestock register`),
@@ -158,11 +246,53 @@ export default function App() {
     updateLocation: (id, body, msg) => act(() => api(`/locations/${id}`, { method: "PATCH", body }), msg),
     addRanch: (body) => act(() => api("/ranches", { method: "POST", body }), (r) => `${r.name} added`),
     updateRanch: (id, body, msg) => act(() => api(`/ranches/${id}`, { method: "PATCH", body }), msg),
-    sell: (body) => act(() => api("/sales", { method: "POST", body }), (r) => `Sale ${r.code} completed — ₦${r.total.toLocaleString("en-NG")}`),
+    sell: async (body) => {
+      if (isOffline()) return offlineSale(body);
+      try {
+        const r = await api("/sales", { method: "POST", body });
+        notify(`Sale ${r.code} completed — ₦${r.total.toLocaleString("en-NG")}`);
+        refresh();
+        return r;
+      } catch (e) {
+        // The connection dropped: save it on the till. If the server did get it, the upload is recognised (same reference).
+        if (e.status === 0) { await setOnline(false); return offlineSale(body); }
+        notify(e.message, "error");
+        return null;
+      }
+    },
+    offlineSummary: async () => {
+      const sales = (await outbox.all()).filter((i) => i.kind === "sale" && i.userId === user.id);
+      const by = {};
+      for (const s of sales) for (const p of s.payload.payments || []) by[p.method] = (by[p.method] || 0) + p.amount;
+      return { count: sales.length, byMethod: by, total: Object.values(by).reduce((a, b) => a + b, 0) };
+    },
     posAuthorize: (body) => api("/pos/authorize", { method: "POST", body }).catch((e) => ({ error: e.message })),
-    holdTicket: (body) => act(() => api("/pos/held", { method: "POST", body }), (r) => `Ticket held — ${r.label}`),
-    recallTicket: (id) => act(() => api(`/pos/held/${id}/recall`, { method: "POST" }), (r) => `${r.label} recalled`),
-    voidTicket: (body) => act(() => api("/pos/void", { method: "POST", body }), "Ticket cleared"),
+    holdTicket: async (body) => {
+      if (!isOffline()) { const r = await act(() => api("/pos/held", { method: "POST", body }), (x) => `Ticket held — ${x.label}`); if (r || !isOffline()) return r; }
+      // Offline: park it on this till.
+      const id = `local-${Date.now()}`;
+      const label = body.label || `Ticket ${new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Lagos" })}`;
+      const held = { id, label, customerId: body.customerId, cart: body.cart, total: body.total, who: user.name, at: "this till (offline)", lines: body.cart.items.length };
+      await kv.set("heldLocal", [...((await kv.get("heldLocal")) || []), held]);
+      patchData((d) => { if (d.pos) d.pos.held = [...d.pos.held, held]; });
+      notify(`Ticket held on this till — ${label}`);
+      return { id, label };
+    },
+    recallTicket: async (id) => {
+      if (String(id).startsWith("local-")) {
+        const list = (await kv.get("heldLocal")) || [];
+        const h = list.find((x) => x.id === id);
+        await kv.set("heldLocal", list.filter((x) => x.id !== id));
+        patchData((d) => { if (d.pos) d.pos.held = d.pos.held.filter((x) => x.id !== id); });
+        if (h) notify(`${h.label} recalled`);
+        return h ? { label: h.label, customerId: h.customerId, cart: h.cart } : null;
+      }
+      return act(() => api(`/pos/held/${id}/recall`, { method: "POST" }), (r) => `${r.label} recalled`);
+    },
+    voidTicket: async (body) => {
+      if (isOffline()) { await queue("void", body, `Cleared ticket · ₦${body.value.toLocaleString("en-NG")}`); notify("Ticket cleared (logged — uploads later)"); return true; }
+      return act(() => api("/pos/void", { method: "POST", body }), "Ticket cleared");
+    },
     tillReport: (code) => api(`/till/${encodeURIComponent(code)}/report`),
     setPosPin: (body) => act(() => api("/auth/pos-pin", { method: "POST", body }), "Till approval PIN saved"),
     saveBusiness: (body) => act(() => api("/settings/business", { method: "PATCH", body }), "Receipt details saved"),
@@ -183,9 +313,25 @@ export default function App() {
     decide: (kind, code, decision, note) => act(() => api(`/approvals/${kind}/${encodeURIComponent(code)}`, { method: "POST", body: { decision, note } }),
       (r) => `${r.code} ${r.status.toLowerCase()}`),
     openTill: (float) => act(() => api("/till/open", { method: "POST", body: { float } }), (r) => `Till ${r.code} open`),
-    closeTill: (body) => act(() => api("/till/close", { method: "POST", body }), null),
+    closeTill: async (body) => {
+      // The cash-up must include every sale: upload the ones made offline first.
+      if ((await pendingSalesFor(user.id)).length) {
+        await syncNow(user, { canUploadForOthers: can(user.roles, "till.review") }).catch(() => {});
+        const left = (await pendingSalesFor(user.id)).length;
+        if (left) { notify(`${left} sale${left === 1 ? " is" : "s are"} still saved on this till — upload ${left === 1 ? "it" : "them"} (internet needed) before closing the till.`, "error"); return null; }
+      }
+      return act(() => api("/till/close", { method: "POST", body }), null);
+    },
     reviewTill: (code, note) => act(() => api(`/till/${encodeURIComponent(code)}/review`, { method: "POST", body: { note } }), `${code} signed off`),
-    logTemp: (body) => act(() => api("/temperatures", { method: "POST", body }), (r) => r.inRange ? `${r.location}: ${r.reading}°C logged` : `${r.location}: ${r.reading}°C logged as a breach`),
+    logTemp: async (body) => {
+      if (isOffline()) {
+        await queue("temp", { ...body, recordedAt: new Date().toISOString() }, `${body.location} ${body.reading}°C`);
+        notify(`${body.location}: ${body.reading}°C saved on this till — uploads later`);
+        return { ok: true, offline: true, location: body.location, reading: body.reading };
+      }
+      return actions._logTempOnline(body);
+    },
+    _logTempOnline: (body) => act(() => api("/temperatures", { method: "POST", body }), (r) => r.inRange ? `${r.location}: ${r.reading}°C logged` : `${r.location}: ${r.reading}°C logged as a breach`),
     scheduleCount: (body) => act(() => api("/counts", { method: "POST", body }), (r) => `Stock count ${r.code} scheduled`),
     getCount: (code) => api(`/counts/${encodeURIComponent(code)}`),
     submitCount: (code, lines) => act(() => api(`/counts/${encodeURIComponent(code)}/submit`, { method: "POST", body: { lines } }),
@@ -199,7 +345,17 @@ export default function App() {
     getRecon: (day, method) => api(`/reconciliations/${day}/${encodeURIComponent(method)}`),
     recordRecon: (body) => act(() => api("/reconciliations", { method: "POST", body }), (r) => r.variance === 0 ? `${r.method} matched — sent for sign-off` : `${r.method} recorded with a ₦${Math.abs(r.variance).toLocaleString("en-NG")} difference — sent for sign-off`),
     reviewRecon: (id, note) => act(() => api(`/reconciliations/${id}/review`, { method: "POST", body: { note } }), "Reconciliation signed off"),
-    completeHaccp: (id, body) => act(() => api(`/haccp/${id}/complete`, { method: "POST", body }), (r) => r.allOk ? "Checklist complete — all passed" : `Checklist complete — ${r.failures} failure${r.failures === 1 ? "" : "s"} sent to a manager`),
+    completeHaccp: async (id, body) => {
+      if (isOffline()) {
+        const c = dataRef.current?.foodSafety?.checklists?.find((x) => x.id === id);
+        await queue("haccp", { checklistId: id, ...body, completedAt: new Date().toISOString() }, `${c?.name ?? "Checklist"}`);
+        patchData((d) => { const x = d.foodSafety?.checklists?.find((k) => k.id === id); if (x) { x.due = false; x.current = { allOk: body.results.every((r) => r.ok), results: body.results.map((r, i) => ({ ...r, item: x.items[i] })), completedBy: user.name, completedAt: "saved on this till", verifiedBy: null }; } });
+        notify("Checklist saved on this till — uploads when the internet is back");
+        return { ok: true, offline: true, allOk: body.results.every((r) => r.ok), failures: body.results.filter((r) => !r.ok).length };
+      }
+      return actions._completeHaccpOnline(id, body);
+    },
+    _completeHaccpOnline: (id, body) => act(() => api(`/haccp/${id}/complete`, { method: "POST", body }), (r) => r.allOk ? "Checklist complete — all passed" : `Checklist complete — ${r.failures} failure${r.failures === 1 ? "" : "s"} sent to a manager`),
     verifyHaccp: (id, note) => act(() => api(`/haccp/runs/${id}/verify`, { method: "POST", body: { note } }), "Checklist verified"),
     addChecklist: (body) => act(() => api("/haccp/checklists", { method: "POST", body }), `${body.name} added`),
     updateChecklist: (id, body, msg = "Checklist updated") => act(() => api(`/haccp/checklists/${id}`, { method: "PATCH", body }), msg),
@@ -213,12 +369,17 @@ export default function App() {
   };
 
   const logout = async () => {
-    await api("/auth/logout", { method: "POST" }).catch(() => {});
-    setUser(null); setData(null); setRoute(null);
+    if (!offlineSession) await api("/auth/logout", { method: "POST" }).catch(() => {});
+    setUser(null); setData(null); setRoute(null); setOfflineSession(false); setLocked(false);
   };
 
   if (user === undefined) return <Splash />;
-  if (!user) return (<>{toast && <Toast toast={toast} onDone={() => setToast(null)} />}<LoginScreen onLogin={(u) => { setUser(u); setRoute(null); }} /></>);
+  if (!user && (offlineGate || !sync.online)) return (
+    <OfflineSignIn pending={sync.pending}
+      onSignedIn={async (snap) => { setOfflineGate(false); setOfflineSession(true); setData(await withPending(snap.state, snap.user.id)); setUser(snap.user); setRoute(null); }}
+      onTryOnline={async () => { try { const r = await api("/auth/me"); await setOnline(true); setOfflineGate(false); setUser(r.user); } catch (e) { if (e.status !== 0) { await setOnline(true); setOfflineGate(false); } } }} />
+  );
+  if (!user) return (<>{toast && <Toast toast={toast} onDone={() => setToast(null)} />}<LoginScreen pending={sync.pending} onLogin={(u) => { setUser(u); setRoute(null); }} /></>);
   if (!user.mustChangePassword && user.mfaSetupRequired) return (
     <div className="min-h-screen flex items-center justify-center px-4 py-8" style={{ background: C.charcoal }}>
       <div className="w-full max-w-md rounded-2xl p-6" style={{ background: "#fff" }}>
@@ -251,6 +412,9 @@ export default function App() {
           <MfaEnrol onCancel={() => setMfaOpen(false)} onDone={() => { setMfaOpen(false); setUser({ ...user, mfaEnabled: true }); notify("Two-step sign-in is on"); }} />
         </Modal>
       )}
+      {locked && <OfflineLock user={user} onUnlock={() => setLocked(false)} onSignOut={logout} />}
+      {syncOpen && <SyncModal user={user} canManage={permit("till.review")} onClose={() => setSyncOpen(false)} onSynced={refresh} />}
+      {offPinOpen && <OfflinePinModal user={user} onClose={() => setOffPinOpen(false)} onSaved={() => { setOffPinOpen(false); notify("Offline PIN saved on this till"); }} />}
       {pinOpen && <PinModal onClose={() => setPinOpen(false)} onSave={async (body) => { if (await actions.setPosPin(body)) { setUser({ ...user, posPinSet: true }); setPinOpen(false); } }} />}
       {pwOpen && (
         <Modal title="Change Password" onClose={() => setPwOpen(false)}>
@@ -275,7 +439,10 @@ export default function App() {
           notifications={data.notifications} canAI={permit("ai.use")} setAiOpen={setAiOpen}
           onMenuClick={() => setMobileNavOpen(true)} onNavigate={goTo} user={user}
           onPassword={() => setPwOpen(true)} onMfa={() => setMfaOpen(true)} onPin={() => setPinOpen(true)} onLogout={logout} onRefresh={refresh} loadError={loadError}
+          onOfflinePin={() => setOffPinOpen(true)} onSync={() => setSyncOpen(true)} pending={sync.pending + sync.errors}
         />
+        <OfflineBanner sync={sync} offlineSession={offlineSession} onOpen={() => setSyncOpen(true)} onSignIn={logout} />
+        <UpdateBanner />
         <main className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-7">
           {route === "dashboard" && <Dashboard data={data} onOpenReport={setReportTab} onNavigate={goTo} />}
           {route === "approvals" && <ApprovalsView data={data} actions={actions} permit={permit} />}
@@ -325,7 +492,7 @@ function Splash({ error, onRetry, onLogout }) {
   );
 }
 
-function LoginScreen({ onLogin }) {
+function LoginScreen({ onLogin, pending = 0 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
@@ -361,6 +528,7 @@ function LoginScreen({ onLogin }) {
           <h1 className="f-display text-3xl mb-2" style={{ color: C.cream }}>Blades & Butchers</h1>
           <p className="f-body text-sm" style={{ color: C.mutedLight }}>Digital Operations Platform</p>
           <p className="f-display italic text-base mt-4" style={{ color: C.goldLight }}>"From Ranch to Retail. One Digital System."</p>
+          {pending > 0 && <p className="f-body text-xs mt-4 rounded-lg px-3 py-2 inline-block" style={{ background: C.charcoal3, color: C.cream }}>{pending} item{pending === 1 ? "" : "s"} saved offline on this till — sign in to upload {pending === 1 ? "it" : "them"}.</p>}
         </div>
 
         {ticket ? <MfaStep ticket={ticket} onDone={onLogin} onBack={() => setTicket(null)} /> : (
@@ -470,7 +638,9 @@ function Sidebar({ route, setRoute, mobileOpen, onClose, user, onLogout, badges 
 
 const TONE = { warn: C.warn, gold: C.gold, burgundy: C.burgundy, danger: C.danger, muted: C.muted, ok: C.ok };
 
-function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate, user, onPassword, onMfa, onPin, onLogout, onRefresh, loadError }) {
+function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate, user, onPassword, onMfa, onPin, onLogout, onRefresh, loadError, onOfflinePin, onSync, pending = 0 }) {
+  const [canInstall, setCanInstall] = useState(!!window.__bladeosInstall);
+  useEffect(() => { const h = () => setCanInstall(!!window.__bladeosInstall); window.addEventListener("bladeos-installable", h); return () => window.removeEventListener("bladeos-installable", h); }, []);
   const [open, setOpen] = useState(null); // "notif" | "user" | null
   const ref = useRef(null);
   useEffect(() => {
@@ -527,6 +697,17 @@ function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate,
             <button onClick={() => { setOpen(null); onPassword(); }} className="w-full text-left flex items-center gap-2.5 px-4 py-2.5 f-body text-sm hover:bg-stone-50" style={{ color: C.ink }}>
               <KeyRound size={14} /> Change password
             </button>
+            <button onClick={() => { setOpen(null); onOfflinePin(); }} className="w-full text-left flex items-center gap-2.5 px-4 py-2.5 f-body text-sm hover:bg-stone-50" style={{ color: C.ink }}>
+              <KeyRound size={14} /> Offline PIN (this till)
+            </button>
+            <button onClick={() => { setOpen(null); onSync(); }} className="w-full text-left flex items-center gap-2.5 px-4 py-2.5 f-body text-sm hover:bg-stone-50" style={{ color: C.ink }}>
+              <RefreshCw size={14} /> Saved on this till{pending ? ` (${pending})` : ""}
+            </button>
+            {canInstall && (
+              <button onClick={async () => { setOpen(null); await window.__bladeosInstall?.(); }} className="w-full text-left flex items-center gap-2.5 px-4 py-2.5 f-body text-sm hover:bg-stone-50" style={{ color: C.ink }}>
+                <Sparkles size={14} /> Install BladeOS app
+              </button>
+            )}
             {can(user.roles, "pos.discount") && (
               <button onClick={() => { setOpen(null); onPin(); }} className="w-full text-left flex items-center gap-2.5 px-4 py-2.5 f-body text-sm hover:bg-stone-50" style={{ color: C.ink }}>
                 <KeyRound size={14} /> {user.posPinSet ? "Change" : "Set"} till approval PIN

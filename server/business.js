@@ -353,7 +353,10 @@ export function businessRoutes(r) {
     const b = parse(z.object({
       results: z.array(z.object({ ok: z.boolean(), action: z.string().trim().max(300).optional().or(z.literal("")) })).min(1).max(40),
       note: z.string().trim().max(300).optional().or(z.literal("")),
+      completedAt: z.string().datetime({ offset: true }).optional(),   // done while the till was offline
     }), req.body);
+    const at = b.completedAt ? new Date(b.completedAt) : null;
+    if (at && (at.getTime() > Date.now() + 10 * 60e3 || at.getTime() < Date.now() - 14 * 864e5)) throw bad("That checklist's time is out of range — check the till's clock.");
     const out = await tx(async (db) => {
       const c = (await db.query("SELECT * FROM haccp_checklists WHERE id = $1", [req.params.id])).rows[0];
       if (!c || !c.active) throw notFound("Checklist not found.");
@@ -361,11 +364,15 @@ export function businessRoutes(r) {
       const results = c.items.map((item, i) => ({ item, ok: b.results[i].ok, action: b.results[i].ok ? null : (b.results[i].action || "") }));
       const missing = results.filter((x) => !x.ok && !note3(x.action));
       if (missing.length) throw bad(`Record the corrective action for: ${missing.map((x) => x.item).join("; ")}.`);
-      const period = (await db.query(`SELECT ${PERIOD(c.frequency)} AS d`)).rows[0].d;
+      const period = at
+        ? (await db.query(`SELECT CASE WHEN $2 = 'weekly' THEN date_trunc('week', ($1::timestamptz AT TIME ZONE 'Africa/Lagos'))::date
+                                       ELSE ($1::timestamptz AT TIME ZONE 'Africa/Lagos')::date END AS d`, [at, c.frequency])).rows[0].d
+        : (await db.query(`SELECT ${PERIOD(c.frequency)} AS d`)).rows[0].d;
       const allOk = results.every((x) => x.ok);
       try {
-        await db.query("INSERT INTO haccp_runs (checklist_id, period_start, results, all_ok, note, completed_by) VALUES ($1,$2,$3,$4,$5,$6)",
-          [c.id, period, JSON.stringify(results), allOk, b.note || null, req.user.id]);
+        await db.query(`INSERT INTO haccp_runs (checklist_id, period_start, results, all_ok, note, completed_by, completed_at, synced_at)
+                        VALUES ($1,$2,$3,$4,$5,$6, COALESCE($7::timestamptz, now()), $8)`,
+          [c.id, period, JSON.stringify(results), allOk, b.note || null, req.user.id, at, at ? new Date() : null]);
       } catch (e) {
         if (e.code === "23505") throw conflict(`${c.name} is already done for ${c.frequency === "weekly" ? "this week" : "today"}.`);
         throw e;

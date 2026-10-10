@@ -278,6 +278,7 @@ export function apiRouter() {
     const refundable = o.status === "Delivered" && o.payment_status === "Paid";
     res.json({
       code: o.code, customer: o.customer_name ?? "Walk-in Customer", phone: o.customer_phone, staff: o.staff_name,
+      offlineNo: o.offline_no, syncedAt: o.synced_at ? fmtDateTime(o.synced_at) : null, offlineFlags: o.offline_flags,
       channel: o.channel, status: o.status, payment: o.payment_status, paymentMethod: o.payment_method, paymentRef: o.payment_ref, paidAt: o.paid_at ? fmtDateTime(o.paid_at) : null,
       total: o.total, refunded: o.refunded, netTotal: o.net_total, area: o.area, createdAt: o.created_at, refundable,
       gross: o.gross_total ?? o.total, discount: o.discount_total, discountReason: o.discount_reason, tax: o.tax_total, change: o.change_given,

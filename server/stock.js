@@ -112,7 +112,16 @@ export async function transferStock(db, { sku, fromId, toId, qty, reference, fro
  * Returns allocations [{ location_id, qty, lots: [{ lot_id, qty }] }] — kept on the order line for
  * restocking and for batch recalls.
  */
-export async function allocateStock(db, { sku, qty, kind, reference, userId }) {
+export async function allocateStock(db, args) {
+  return (await allocateStockUpTo(db, { ...args, allowShort: false })).allocations;
+}
+
+/**
+ * Like allocateStock, but with allowShort the sale goes through even when the system shows less than was sold
+ * (an offline sale: the meat was physically there and has already been paid for). Takes what the system has and
+ * reports the shortfall so a manager can count that product.
+ */
+export async function allocateStockUpTo(db, { sku, qty, kind, reference, userId, allowShort = false }) {
   const { rows: prod } = await db.query("SELECT name FROM products WHERE sku = $1 AND active", [sku]);
   if (!prod[0]) throw notFound(`Product ${sku} not found.`);
   const { rows } = await db.query(
@@ -129,6 +138,8 @@ export async function allocateStock(db, { sku, qty, kind, reference, userId }) {
   );
   const sellable = rows.reduce((s, r) => s + r.sellable, 0);
   const expired = rows.reduce((s, r) => s + r.expired, 0);
+  let short = 0;
+  if (sellable + 1e-9 < qty && allowShort) { short = round3(qty - sellable); qty = round3(sellable); }
   if (sellable + 1e-9 < qty) {
     throw conflict(`Not enough ${prod[0].name} in stock — only ${round3(sellable)} available` +
       (expired > 0 ? ` (${round3(expired)} more is past its use-by date and can't be sold).` : "."));
@@ -143,7 +154,7 @@ export async function allocateStock(db, { sku, qty, kind, reference, userId }) {
     allocations.push({ location_id: r.location_id, qty: take, lots: taken.map((t) => ({ lot_id: t.lot_id, qty: t.qty })) });
     left = round3(left - take);
   }
-  return allocations;
+  return { allocations, short };
 }
 
 /** Put sold stock back exactly where it came from (cancellation / restocked refund). Takes up to `qty`. */

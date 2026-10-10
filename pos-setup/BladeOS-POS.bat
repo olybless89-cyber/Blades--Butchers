@@ -6,7 +6,8 @@ rem
 rem  1. Change BLADEOS_URL below to your BladeOS address.
 rem  2. Change PRIMARY_WIDTH to the main screen's width in pixels
 rem     (Settings > Display > Display resolution, e.g. 1366 or 1920).
-rem  3. Double-click this file. To start BladeOS when Windows starts, run:
+rem  3. Double-click this file to test. To install it (Desktop icon, Start menu,
+rem     starts with Windows), open Command Prompt here and run:
 rem        BladeOS-POS.bat install
 rem
 rem  It opens the till full screen with silent receipt printing (to the Windows
@@ -17,8 +18,20 @@ set "PRIMARY_WIDTH=1366"
 set "PROFILE=%LOCALAPPDATA%\BladeOS-POS"
 
 if /i "%~1"=="install" (
-  copy /y "%~f0" "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\BladeOS-POS.bat" >nul
-  echo BladeOS POS will now start when Windows starts.
+  rem Put the launcher in a fixed place, with the BladeOS icon, a Desktop shortcut, a Start-menu entry,
+  rem and start it with Windows.
+  if not exist "%PROFILE%" mkdir "%PROFILE%"
+  copy /y "%~f0" "%PROFILE%\BladeOS-POS.bat" >nul
+  powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "try { Invoke-WebRequest -UseBasicParsing '%BLADEOS_URL%/icons/bladeos.ico' -OutFile '%PROFILE%\bladeos.ico' } catch { }" ^
+    "; $s = New-Object -ComObject WScript.Shell" ^
+    "; foreach ($dir in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Startup'))) {" ^
+    "   $l = $s.CreateShortcut((Join-Path $dir 'BladeOS POS.lnk')); $l.TargetPath = '%PROFILE%\BladeOS-POS.bat';" ^
+    "   $l.WorkingDirectory = '%PROFILE%'; $l.WindowStyle = 7; $l.Description = 'BladeOS point of sale';" ^
+    "   if (Test-Path '%PROFILE%\bladeos.ico') { $l.IconLocation = '%PROFILE%\bladeos.ico' }; $l.Save() }"
+  if exist "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\BladeOS-POS.bat" del "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\BladeOS-POS.bat"
+  echo.
+  echo BladeOS POS is installed: Desktop icon, Start menu, and it starts with Windows.
   pause
   exit /b 0
 )

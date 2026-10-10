@@ -32,8 +32,14 @@ Not supported from a browser: network (LAN/Wi-Fi IP) receipt printers without a 
 1. Copy `BladeOS-POS.bat` to the till (e.g. the Desktop).
 2. Right-click → **Edit**: set `BLADEOS_URL` to your BladeOS address and `PRIMARY_WIDTH` to the main screen's width.
 3. Double-click it. The till opens full screen and the customer screen opens on the second display.
-4. To start BladeOS automatically: open Command Prompt in that folder and run `BladeOS-POS.bat install`.
+4. To install it: open Command Prompt in that folder and run `BladeOS-POS.bat install`. This adds a **BladeOS POS** icon
+   on the Desktop and in the Start menu, and starts BladeOS with Windows.
 5. Sign in as the cashier. (Press **Alt+F4** to close the till window.)
+6. Each cashier sets an **Offline PIN** once on this till: account menu (top right) → *Offline PIN (this till)*.
+7. POS → **Devices**: set the **Till number** (1, 2, …) — it starts the receipt numbers used offline (T1-000123).
+
+Back-office PCs, laptops and phones don't need the launcher: open BladeOS in Chrome or Edge and use the account menu →
+**Install BladeOS app** (or the install icon in the address bar; on a phone, *Add to Home screen*).
 
 ## 3. In BladeOS (POS → Devices)
 
@@ -43,12 +49,30 @@ Not supported from a browser: network (LAN/Wi-Fi IP) receipt printers without a 
 4. **Customer screen**: if it didn't open on its own, press *Customer screen* on the POS, allow window placement, or drag it to the second display and press F11.
 5. Business Setup → Products: scan each packed product's barcode into its **Barcode** box. Business Setup → Receipt & Till: address, phone, TIN, and whether your label scale prints **weight** or **price**.
 
+## When the internet goes down
+
+- The till keeps selling: cash, card and transfer sales, receipts, the cash drawer, scanner, scale and customer screen all
+  carry on. A yellow bar says **Offline** and how many items are waiting to upload.
+- Offline receipts are numbered **T1-000001**, **T1-000002**, … (T + till number). Each one becomes a normal ORD number
+  when it uploads.
+- Also saved for upload: cleared tickets, temperature readings and food-safety checklists. Tickets can be held and recalled.
+- Needs the internet: manager-approved discounts, pay-later, new customers, refunds, approvals, reports, closing the till.
+- If the till restarts without internet, sign in with the **Offline PIN**. Five wrong tries remove the PIN.
+- After **24 hours** offline the bar turns red; after **72 hours** selling pauses until the till uploads.
+- When the internet is back, sign in normally: everything uploads by itself. A manager signing in on the till also uploads
+  sales left by a cashier who has gone home.
+- Uploaded sales keep the time they were made and the price the customer paid. If the system had less stock than was
+  sold, or a price had changed, the sale is still recorded and managers see a "check" note on the order.
+- **Never clear the browser data on a till** while the bar shows items waiting. To be safe before reinstalling Windows,
+  tap the bar → *Save a copy (file)*.
+
 ## 4. Check before opening
 
 - A cash sale prints one receipt, cuts, and opens the drawer.
 - A card or transfer sale prints and does **not** open the drawer (ESC/POS mode; in Windows-printer mode the driver opens it on every receipt unless you pick "Cash only" where the driver offers it).
 - The customer screen shows each item, the total, and the change.
 - Close the till and print the Z report.
+- Unplug the network cable (or turn off Wi-Fi), make a sale, plug it back in, sign in: the bar should say everything uploaded.
 
 ## Troubleshooting
 

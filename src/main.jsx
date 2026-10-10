@@ -33,6 +33,32 @@ class ErrorBoundary extends React.Component {
   }
 }
 
+// Installable app + offline: register the service worker (production builds only).
+if ("serviceWorker" in navigator && import.meta.env.PROD) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").then((reg) => {
+      const ready = (w) => {
+        // A new version is installed and waiting: offer it; the till applies it between sales.
+        window.__bladeosUpdate = () => { w.postMessage("skipWaiting"); };
+        window.dispatchEvent(new Event("bladeos-update"));
+      };
+      if (reg.waiting && navigator.serviceWorker.controller) ready(reg.waiting);
+      reg.addEventListener("updatefound", () => {
+        const w = reg.installing;
+        w?.addEventListener("statechange", () => { if (w.state === "installed" && navigator.serviceWorker.controller) ready(w); });
+      });
+      setInterval(() => reg.update().catch(() => {}), 30 * 60e3);
+    }).catch((e) => console.warn("Service worker not registered:", e.message));
+    let reloading = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => { if (!reloading) { reloading = true; window.location.reload(); } });
+  });
+}
+window.addEventListener("beforeinstallprompt", (e) => {
+  e.preventDefault();
+  window.__bladeosInstall = async () => { e.prompt(); await e.userChoice.catch(() => {}); window.__bladeosInstall = null; window.dispatchEvent(new Event("bladeos-installable")); };
+  window.dispatchEvent(new Event("bladeos-installable"));
+});
+
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <ErrorBoundary>

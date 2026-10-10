@@ -73,6 +73,11 @@ export function DevicesModal({ inventory, profile, onClose }) {
     <Modal title="Devices on this till" onClose={onClose} wide>
       <div className="space-y-4">
         <p className="f-body text-xs" style={{ color: C.muted }}>Saved on this terminal only. Set it up once per till.</p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 items-end">
+          <Field label="Till number" hint="On offline receipts (T1-000123)">
+            <Input mono value={d.tillNo ?? "1"} maxLength={4} onChange={(e) => set({ tillNo: e.target.value.replace(/[^A-Za-z0-9]/g, "").slice(0, 4) })} aria-label="Till number" />
+          </Field>
+        </div>
 
         <Section icon={Printer} title="Receipt printer">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

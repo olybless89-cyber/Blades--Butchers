@@ -156,6 +156,8 @@ export function POSView({ data, actions, permit }) {
   };
 
   handleCodeRef.current = handleCode;
+  // An app update waits while a ticket is open (applied between customers).
+  useEffect(() => { window.__bladeosBusy = cart.length > 0 || modal === "pay"; return () => { window.__bladeosBusy = false; }; }, [cart, modal]);
   // Keyboard: shortcuts, and a barcode scanner typing while focus is elsewhere lands in the search box.
   useEffect(() => {
     if (!tillOpen) return;

@@ -20,6 +20,7 @@ export const DEFAULT_DEVICES = {
   printerBaud: 9600,
   printerPort: null,             // { usbVendorId, usbProductId } of the chosen COM port
   scannerSuffix: "auto",         // "auto" | "enter" | "tab" | "none" — what the scanner sends after the code
+  tillNo: "1",                   // this till's number, printed on receipts made offline (T1-000123)
 };
 export function loadDevices() {
   try { return { ...DEFAULT_DEVICES, ...(JSON.parse(localStorage.getItem(KEY)) || {}) }; } catch { return { ...DEFAULT_DEVICES }; }

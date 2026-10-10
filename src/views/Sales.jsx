@@ -113,6 +113,12 @@ function OrderModal({ code, actions, permit, profile, onClose }) {
             <Info label="Area" value={o.area || "—"} />
             <Info label="Placed" value={new Date(o.createdAt).toLocaleString("en-GB", { timeZone: "Africa/Lagos", dateStyle: "medium", timeStyle: "short" })} />
           </div>
+          {o.offlineNo && (
+            <div className="rounded-xl px-4 py-2.5 mb-4 f-body text-xs" style={{ background: o.offlineFlags ? "#F5E4E2" : C.cream, color: C.ink }} data-offline-order>
+              Sold while the till was offline (receipt {o.offlineNo}){o.syncedAt ? ` · uploaded ${o.syncedAt}` : ""}.
+              {o.offlineFlags && <div className="mt-1 font-semibold" style={{ color: C.danger }}>Check: {o.offlineFlags}</div>}
+            </div>
+          )}
           <div className="rounded-xl overflow-hidden border mb-5" style={{ borderColor: C.border }}>
             {o.items.map((i, k) => (
               <div key={k} className="flex justify-between gap-2 px-4 py-2.5 border-b last:border-0" style={{ borderColor: C.rowLine }}>

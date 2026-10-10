@@ -104,7 +104,10 @@ export function operationRoutes(r) {
       reading: z.coerce.number().min(-60).max(60),
       note: z.string().trim().max(200).optional(),
       action: z.string().trim().max(200).optional(),
+      recordedAt: z.string().datetime({ offset: true }).optional(),   // taken while the till was offline
     }), req.body);
+    const at = b.recordedAt ? new Date(b.recordedAt) : null;
+    if (at && (at.getTime() > Date.now() + 10 * 60e3 || at.getTime() < Date.now() - 14 * 864e5)) throw bad("That reading's time is out of range — check the till's clock.");
     const out = await tx(async (db) => {
       const l = (await db.query("SELECT * FROM storage_locations WHERE name = $1 AND active", [b.location])).rows[0];
       if (!l) throw bad("Unknown storage location.");
@@ -113,8 +116,9 @@ export function operationRoutes(r) {
       if (!inRange && !(b.action && b.action.length >= 3)) {
         throw bad(`${reading}°C is outside ${l.name}'s safe range (${l.temp_min}°C to ${l.temp_max}°C). Record the corrective action taken.`);
       }
-      await db.query("INSERT INTO temperature_logs (location_id, reading_c, in_range, note, action, user_id) VALUES ($1,$2,$3,$4,$5,$6)",
-        [l.id, reading, inRange, b.note || null, b.action || null, req.user.id]);
+      await db.query(`INSERT INTO temperature_logs (location_id, reading_c, in_range, note, action, user_id, recorded_at, synced_at)
+                      VALUES ($1,$2,$3,$4,$5,$6, COALESCE($7::timestamptz, now()), $8)`,
+        [l.id, reading, inRange, b.note || null, b.action || null, req.user.id, at, at ? new Date() : null]);
       if (!inRange) await audit(db, req.user.id, `Temperature breach at ${l.name}`, `${reading}°C (safe ${l.temp_min} to ${l.temp_max}°C) · ${b.action}`);
       return { ok: true, inRange, location: l.name, reading };
     });

@@ -34,6 +34,8 @@ app.use(helmet({
       "base-uri": ["'self'"],
       "form-action": ["'self'"],
       "object-src": ["'none'"],
+      "worker-src": ["'self'"],
+      "manifest-src": ["'self'"],
     },
   },
   crossOriginEmbedderPolicy: false,
@@ -55,6 +57,10 @@ app.use("/api", apiRouter());
 
 if (fs.existsSync(path.join(DIST, "index.html"))) {
   app.use("/assets", express.static(path.join(DIST, "assets"), { immutable: true, maxAge: "1y", fallthrough: false }));
+  // The service worker and manifest must always be re-checked, or tills would keep running an old version.
+  app.get(["/sw.js", "/manifest.webmanifest"], (req, res) => {
+    res.set({ "Cache-Control": "no-cache", "Service-Worker-Allowed": "/" }).sendFile(path.join(DIST, req.path.slice(1)));
+  });
   app.use(express.static(DIST, { index: false, maxAge: "1h" }));
   app.get("*", (_req, res) => {
     res.set("Cache-Control", "no-cache").sendFile(path.join(DIST, "index.html"));

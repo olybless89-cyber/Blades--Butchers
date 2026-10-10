@@ -113,6 +113,16 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
     items, total and change. Settings are per till.
   - Refunds give back what was actually paid per item (after discounts). Till cash-up and bank reconciliation count each
     tender of a split payment separately.
+- **Installable app + offline till** (`src/lib/offline.js`, `src/views/Offline.jsx`, `src/sw-template.js`):
+  - Installs from Chrome/Edge (account menu → *Install BladeOS app*) with its own icon and window; a service worker keeps
+    the app files on the device so it opens with no internet. New versions download in the background and apply between
+    sales ("A new version is ready").
+  - Offline, the till sells (cash, card, transfer), holds and clears tickets, and records temperatures and checklists. Each
+    item goes into an upload queue in IndexedDB that survives restarts and power cuts, and uploads in order when the internet
+    returns (`POST /api/pos/offline-sales` keeps the sale time, price charged and offline receipt number T1-000123;
+    repeats are ignored). Stock the system didn't have is recorded as a shortfall to count, never refused.
+  - Offline sign-in and the idle lock use a per-till **Offline PIN** (PBKDF2, stored only on that till).
+  - Limits: warning after 24 h offline, selling paused after 72 h; the till can't close while its sales are unsent.
 - **Business controls** (`server/business.js`):
   - *Purchase orders:* raise → a different manager approves (Operations Managers up to the *purchase* limit; Owner/MD orders
     are approved on creation) → storekeepers receive deliveries only against an approved PO (weighed lines up to 5% over;
@@ -152,7 +162,7 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
 
 ## Layout
 ```
-pos-setup/  BladeOS-POS.bat (Windows till launcher) · README.md (Licon / till hardware setup)
+pos-setup/  BladeOS-POS.bat (Windows till launcher + `install` for Desktop/Start-menu icon) · README.md (Licon / till hardware setup)
 server/   index.js · pos.js (sales, discounts, tender, held tickets, X/Z) · routes.js (writes) · controls.js (approvals, refunds) · operations.js (tills, temps, counts, trace, limits)
           business.js (purchase orders, payment reconciliation, HACCP) · backup.js + restore.js (backups)
           state.js (reads/KPIs) · stock.js (lots, FEFO) · auth.js + totp.js (sign-in) · seed.js · migrate.js
