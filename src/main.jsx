@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
+import { CustomerDisplay } from "./views/Devices.jsx";
 import "./index.css";
 
 class ErrorBoundary extends React.Component {
@@ -35,7 +36,8 @@ class ErrorBoundary extends React.Component {
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <App />
+      {/* The terminal's customer-facing screen: no sign-in, shows only what the till in this browser sends it. */}
+      {window.location.hash === "#customer-display" ? <CustomerDisplay /> : <App />}
     </ErrorBoundary>
   </React.StrictMode>
 );

@@ -1,16 +1,17 @@
 // Counter POS: scan or search → ticket → discounts (manager PIN) → tender (split, change) → receipt.
 // Keyboard: F2 search · F4 / F12 pay · F8 hold · F9 discount · Esc close. A USB barcode scanner works anywhere on the screen.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import QRCode from "qrcode";
 import {
   Search, ScanLine, X, Plus, Minus, Trash2, PauseCircle, PlayCircle, Percent, UserPlus, Printer, Check, ShoppingCart,
-  Banknote, CreditCard, Landmark, Delete, ShieldCheck, Receipt, Ban, FileText, Clock,
+  Banknote, CreditCard, Landmark, Delete, ShieldCheck, Receipt, Ban, FileText, Clock, Settings2, Monitor,
 } from "lucide-react";
 import { C, nairaFmt, qtyFmt } from "../lib/theme.js";
 import { QUICK_CASH } from "../shared/permissions.js";
 import { SectionHeader, Btn, Modal, Field, Input, Select, Empty, useBusy } from "../components/ui.jsx";
 import { ScaleReader } from "../lib/scale.jsx";
 import { TillBar, AddCustomerModal } from "./Sales.jsx";
+import { DevicesModal } from "./Devices.jsx";
+import { printBlocks, receiptBlocks, reportBlocks, loadDevices, customerDisplay, openCustomerDisplay } from "../lib/hardware.js";
 
 const AREAS = ["Wuse II", "Garki", "Maitama", "Gwarinpa", "Jabi", "Asokoro", "Life Camp", "Utako", "Kubwa", "Lokogoma"];
 const VOID_REASONS = ["Customer changed mind", "Wrong items keyed", "Price query", "Customer couldn't pay", "Training"];
@@ -83,6 +84,35 @@ export function POSView({ data, actions, permit }) {
   useEffect(() => { if (customer && customer.area !== "—") setArea(customer.area); }, [customerId]);
   useEffect(() => { if (!scanMsg) return; const t = setTimeout(() => setScanMsg(null), 2600); return () => clearTimeout(t); }, [scanMsg]);
 
+  // Scanners that send nothing after the code: a burst of fast keystrokes followed by a pause is a scan.
+  const [devices, setDevices] = useState(loadDevices);
+  useEffect(() => { const h = (e) => setDevices(e.detail); window.addEventListener("bladeos-devices", h); return () => window.removeEventListener("bladeos-devices", h); }, []);
+  const burst = useRef({ last: 0, fast: 0, timer: null });
+  const onSearchChange = (v) => {
+    setSearch(v);
+    const now = performance.now(), b = burst.current;
+    b.fast = now - b.last < 40 ? b.fast + 1 : 0;
+    b.last = now;
+    clearTimeout(b.timer);
+    if (devices.scannerSuffix === "none" || devices.scannerSuffix === "auto") {
+      if (b.fast >= 5 && /^\d{6,14}$/.test(v.trim())) b.timer = setTimeout(() => { burst.current.fast = 0; handleCodeRef.current(v); }, 120);
+    }
+  };
+  const handleCodeRef = useRef(() => {});
+
+  // Customer screen: mirror the ticket.
+  useEffect(() => {
+    if (modal === "pay") return;
+    customerDisplay.send({ type: "ticket", profile: pos.profile, customer: customer?.name,
+      lines: priced.lines.map((l) => ({ name: l.name, qty: qtyFmt(l.qty, l.unit), price: l.price, discount: l.disc, total: l.total })),
+      gross: priced.gross, discount: priced.discount, tax: priced.tax, total: priced.total });
+  }, [cart, ticketDiscount, customerId, modal]);
+  useEffect(() => customerDisplay.listen((m) => {
+    if (m?.type === "hello") customerDisplay.send({ type: "ticket", profile: pos.profile, customer: customer?.name,
+      lines: priced.lines.map((l) => ({ name: l.name, qty: qtyFmt(l.qty, l.unit), price: l.price, discount: l.disc, total: l.total })),
+      gross: priced.gross, discount: priced.discount, tax: priced.tax, total: priced.total });
+  }), [cart, ticketDiscount, customerId]);
+
   const reset = () => {
     setCart([]); setTicketDiscount(null); setDiscountReason(""); setApproval(null); setCustomerId(""); setFulfilment("Walk-in"); setArea("");
     setClientRef(newRef()); setPicking(null); setSearch("");
@@ -125,6 +155,7 @@ export function POSView({ data, actions, permit }) {
     if (!hits.length) setScanMsg({ bad: true, text: `Nothing matches “${code}”.` });
   };
 
+  handleCodeRef.current = handleCode;
   // Keyboard: shortcuts, and a barcode scanner typing while focus is elsewhere lands in the search box.
   useEffect(() => {
     if (!tillOpen) return;
@@ -171,7 +202,11 @@ export function POSView({ data, actions, permit }) {
 
   return (
     <div>
-      <SectionHeader eyebrow="Point of Sale" title="POS Terminal" />
+      <SectionHeader eyebrow="Point of Sale" title="POS Terminal" action={
+        <div className="flex gap-1.5">
+          <Btn small variant="ghost" icon={Monitor} onClick={() => openCustomerDisplay()}>Customer screen</Btn>
+          <Btn small variant="ghost" icon={Settings2} onClick={() => setModal("devices")}>Devices</Btn>
+        </div>} />
       <TillBar till={data.tills?.mine} actions={actions} label="till" canX={permit("till.review")} />
       {tillOpen && (
         <div className="flex flex-col lg:grid lg:grid-cols-5 gap-4 lg:h-[calc(100vh-215px)] pb-20 lg:pb-0">
@@ -180,7 +215,8 @@ export function POSView({ data, actions, permit }) {
             <form onSubmit={(e) => { e.preventDefault(); handleCode(search); }} className="p-3 border-b flex gap-2" style={{ borderColor: C.line }}>
               <div className="relative flex-1">
                 <ScanLine size={16} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: C.muted }} />
-                <input ref={searchRef} value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Scan or search"
+                <input ref={searchRef} value={search} onChange={(e) => onSearchChange(e.target.value)} aria-label="Scan or search"
+                  onKeyDown={(e) => { if (e.key === "Tab" && search.trim() && devices.scannerSuffix !== "enter") { e.preventDefault(); clearTimeout(burst.current.timer); handleCode(search); } }}
                   placeholder="Scan barcode, type PLU or name (F2)" autoComplete="off" inputMode="search"
                   className="f-body w-full text-sm rounded-lg pl-9 pr-8 py-2.5 border outline-none focus:ring-2" style={{ borderColor: C.input, "--tw-ring-color": C.goldLight }} />
                 {search && <button type="button" aria-label="Clear search" onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 p-1"><X size={14} style={{ color: C.muted }} /></button>}
@@ -319,6 +355,7 @@ export function POSView({ data, actions, permit }) {
       {modal === "held" && <HeldModal held={pos.held} onClose={() => setModal(null)} onRecall={recall} />}
       {modal === "clear" && <ClearModal lines={cart.length} total={priced.total} onClose={() => setModal(null)}
         onClear={async (reason) => { await actions.voidTicket({ lines: cart.length, value: priced.total, reason }); reset(); setModal(null); }} />}
+      {modal === "devices" && <DevicesModal inventory={inventory} profile={pos.profile} onClose={() => setModal(null)} />}
       {modal === "customer" && <AddCustomerModal onClose={() => setModal(null)} onSave={actions.addCustomer} onCreated={(c) => setCustomerId(String(c.id))} />}
     </div>
   );
@@ -515,6 +552,25 @@ function TenderModal({ total, priced, customer, profile, user, submit, onClose, 
   const err = amount === "" && isCash ? null : !(Number.isInteger(a) && a > 0) ? "Whole naira above zero." : !isCash && a > remaining ? `Only ${nairaFmt(remaining)} left to pay.` : null;
   const finishes = !err && (applied >= remaining);
 
+  const [printState, setPrintState] = useState(null);
+  const makeReceipt = (dn) => ({ code: dn.code, at: dn.at, cashier: user.name, customer: customer?.name ?? "Walk-in customer",
+    lines: priced.lines.map((l) => ({ name: l.name, qty: l.qty, unit: l.unit, price: l.price, discount: l.disc, total: l.total, vat: l.tax > 0 })),
+    gross: priced.gross, discount: priced.discount, tax: priced.tax, total: dn.total, tenders: dn.tenders, change: dn.change, later: dn.later });
+  const doPrint = async (dn) => {
+    setPrintState("Printing…");
+    const r = await printReceipt(profile, makeReceipt(dn));
+    setPrintState(r.ok ? "Receipt printed" : `Printer: ${r.error}`);
+  };
+  useEffect(() => {
+    if (!done) return;
+    customerDisplay.send({ type: "done", profile, total: done.total, change: done.change });
+    if (loadDevices().autoPrint && !done.duplicate) doPrint(done);
+  }, [done]);
+  useEffect(() => {
+    if (!done) customerDisplay.send({ type: "pay", profile, due: remaining, paid, total, customer: customer?.name,
+      lines: priced.lines.map((l) => ({ name: l.name, qty: qtyFmt(l.qty, l.unit), price: l.price, discount: l.disc, total: l.total })),
+      gross: priced.gross, discount: priced.discount, tax: priced.tax });
+  }, [remaining, done]);
   const complete = (list) => run(async () => {
     const r = await submit({ payments: list.map((t) => ({ method: t.method, amount: t.amount, ...(t.tendered ? { tendered: t.tendered } : {}), ...(t.ref ? { ref: t.ref } : {}) })) });
     if (r) setDone({ ...r, tenders: list, at: new Date() });
@@ -539,9 +595,6 @@ function TenderModal({ total, priced, customer, profile, user, submit, onClose, 
   }, [done]);
 
   if (done) {
-    const receipt = { code: done.code, at: done.at, cashier: user.name, customer: customer?.name ?? "Walk-in customer",
-      lines: priced.lines.map((l) => ({ name: l.name, qty: l.qty, unit: l.unit, price: l.price, discount: l.disc, total: l.total, vat: l.tax > 0 })),
-      gross: priced.gross, discount: priced.discount, tax: priced.tax, total: done.total, tenders: done.tenders, change: done.change, later: done.later };
     return (
       <Modal title={`Sale ${done.code}`} onClose={() => { onDone(); onClose(); }}>
         <div className="text-center mb-5">
@@ -551,9 +604,10 @@ function TenderModal({ total, priced, customer, profile, user, submit, onClose, 
             <div className="f-mono text-4xl font-bold" style={{ color: C.ok }} data-change>{nairaFmt(done.change)}</div>
           </>) : <div className="f-mono text-2xl font-semibold" style={{ color: C.ink }}>{done.later ? "Saved — payment pending" : `${nairaFmt(done.total)} paid`}</div>}
           {done.duplicate && <p className="f-body text-xs mt-2" style={{ color: C.gold }}>This ticket had already gone through — nothing was charged twice.</p>}
+          {printState && <p className="f-body text-xs mt-2" data-print-state style={{ color: /^Printer:/.test(printState) ? C.danger : C.muted }}>{printState}</p>}
         </div>
         <div className="grid grid-cols-2 gap-2">
-          <Btn variant="ghost" icon={Printer} onClick={() => printReceipt(profile, receipt)}>Print receipt</Btn>
+          <Btn variant="ghost" icon={Printer} onClick={() => doPrint(done)}>{printState === "Receipt printed" ? "Print again" : "Print receipt"}</Btn>
           <Btn icon={Plus} onClick={() => { onDone(); onClose(); }}>New sale (Enter)</Btn>
         </div>
       </Modal>
@@ -671,43 +725,8 @@ function ClearModal({ lines, total, onClose, onClear }) {
 
 /* ============================================================ receipt (80 mm) */
 export async function printReceipt(profile, r, { copy = false } = {}) {
-  const w = window.open("", "_blank", "width=380,height=700");
-  if (!w) return;
-  let qr = "";
-  try { qr = "data:image/svg+xml;utf8," + encodeURIComponent(await QRCode.toString(r.code, { type: "svg", margin: 0 })); } catch { /* receipt still prints */ }
-  const p = profile || {};
-  const when = (r.at instanceof Date ? r.at : new Date(r.at)).toLocaleString("en-GB", { timeZone: "Africa/Lagos", day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
-  const rows = r.lines.map((l) => `<tr><td>${esc(l.name)}${l.vat ? " *" : ""}<br><small>${esc(qtyFmt(l.qty, l.unit))} × ${nairaFmt(l.price)}</small>${l.discount ? `<br><small>Discount −${nairaFmt(l.discount)}</small>` : ""}</td><td class="r">${nairaFmt(l.total)}</td></tr>`).join("");
-  const tenders = r.later ? `<div class="row"><span>PAYMENT PENDING</span><span></span></div>`
-    : r.tenders.map((t) => `<div class="row"><span>${esc(t.method)}${t.ref ? ` (${esc(t.ref)})` : ""}</span><span>${nairaFmt(t.tendered || t.amount)}</span></div>`).join("");
-  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${esc(r.code)}</title><style>
-    @page{size:80mm auto;margin:0}body{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;width:72mm;margin:0 auto;padding:6px 4px;color:#000}
-    h1{font-size:16px;text-align:center;margin:2px 0}p{margin:1px 0;text-align:center}.c{text-align:center}.r{text-align:right;white-space:nowrap}
-    table{width:100%;border-collapse:collapse;margin:6px 0}td{padding:3px 0;border-bottom:1px dashed #999;vertical-align:top}small{color:#333}
-    .row{display:flex;justify-content:space-between;gap:8px}.t{font-size:15px;font-weight:bold;margin:4px 0}.hr{border-top:1px dashed #000;margin:6px 0}
-    .copy{font-weight:bold;text-align:center;border:1px solid #000;padding:2px;margin:4px 0}img{display:block;margin:6px auto}
-  </style></head><body>
-    <h1>${esc(p.name || "Blades & Butchers")}</h1>${p.tagline ? `<p>${esc(p.tagline)}</p>` : ""}
-    ${p.address ? `<p>${esc(p.address)}</p>` : ""}${p.phone ? `<p>Tel ${esc(p.phone)}</p>` : ""}${p.tin ? `<p>TIN ${esc(p.tin)}</p>` : ""}
-    ${copy ? `<div class="copy">COPY — REPRINT</div>` : ""}
-    <div class="hr"></div>
-    <div class="row"><span>Receipt</span><span>${esc(r.code)}</span></div>
-    <div class="row"><span>Date</span><span>${esc(when)}</span></div>
-    <div class="row"><span>Served by</span><span>${esc(r.cashier || "")}</span></div>
-    <div class="row"><span>Customer</span><span>${esc(r.customer)}</span></div>
-    <table>${rows}</table>
-    <div class="row"><span>Subtotal</span><span>${nairaFmt(r.gross)}</span></div>
-    ${r.discount ? `<div class="row"><span>Discount</span><span>−${nairaFmt(r.discount)}</span></div>` : ""}
-    <div class="row t"><span>TOTAL</span><span>${nairaFmt(r.total)}</span></div>
-    ${r.tax ? `<div class="row"><span>VAT included (*)</span><span>${nairaFmt(r.tax)}</span></div>` : ""}
-    <div class="hr"></div>${tenders}
-    ${r.change ? `<div class="row t"><span>CHANGE</span><span>${nairaFmt(r.change)}</span></div>` : ""}
-    ${qr ? `<img src="${qr}" width="96" height="96" alt="">` : ""}
-    <p>${esc(p.receiptFooter || "Thank you!")}</p><p><small>Keep this receipt for refunds.</small></p>
-  </body></html>`);
-  w.document.close();
-  w.focus();
-  setTimeout(() => w.print(), 250);
+  // Cash sales open the drawer (ESC/POS mode); reprints never do.
+  return printBlocks(receiptBlocks(profile, r, { copy }), { title: r.code, cash: !copy && (r.tenders || []).some((t) => t.method === "Cash"), copies: copy ? 1 : undefined });
 }
 
 /* ============================================================ X / Z report */
@@ -715,23 +734,8 @@ export function TillReportModal({ code, actions, onClose }) {
   const [r, setR] = useState(null);
   const [error, setError] = useState(null);
   useEffect(() => { actions.tillReport(code).then(setR).catch((e) => setError(e.message)); }, [code]);
-  const print = () => {
-    const w = window.open("", "_blank", "width=380,height=700");
-    if (!w || !r) return;
-    const line = (a, b) => `<div class="row"><span>${esc(a)}</span><span>${esc(b)}</span></div>`;
-    w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${r.type} report ${esc(r.code)}</title><style>
-      @page{size:80mm auto;margin:0}body{font-family:ui-monospace,Menlo,monospace;font-size:12px;width:72mm;margin:0 auto;padding:6px 4px}
-      h1{font-size:15px;text-align:center;margin:2px 0}.row{display:flex;justify-content:space-between;gap:8px}.hr{border-top:1px dashed #000;margin:6px 0}b{display:block;margin-top:4px}
-    </style></head><body><h1>${r.type} REPORT</h1>
-      ${line("Till", r.code)}${line("Cashier", r.cashier)}${line("Opened", r.openedAt)}${r.closedAt ? line("Closed", r.closedAt) : ""}${line("Printed", r.printedAt)}<div class="hr"></div>
-      ${line("Sales", r.sales.count)}${line("Gross", nairaFmt(r.sales.gross))}${line("Discounts", "−" + nairaFmt(r.sales.discounts))}${line("Net sales", nairaFmt(r.sales.net))}${line("VAT included", nairaFmt(r.sales.tax))}
-      <b>Tenders</b>${r.tenders.map((t) => line(t.method, nairaFmt(t.amount))).join("")}
-      <b>Refunds</b>${r.refunds.length ? r.refunds.map((t) => line(t.method, "−" + nairaFmt(t.amount))).join("") : line("None", "")}
-      ${line("Cleared tickets", `${r.voided.tickets} (${nairaFmt(r.voided.value)})`)}
-      ${r.cash ? `<div class="hr"></div>${line("Float", nairaFmt(r.cash.float))}${line("Cash sales", nairaFmt(r.cash.cashIn))}${line("Cash refunds", "−" + nairaFmt(r.cash.cashOut))}${line("Expected in drawer", nairaFmt(r.cash.expected))}${r.cash.counted != null ? line("Counted", nairaFmt(r.cash.counted)) + line("Variance", nairaFmt(r.cash.variance)) : ""}` : ""}
-    </body></html>`);
-    w.document.close(); w.focus(); setTimeout(() => w.print(), 200);
-  };
+  const [printMsg, setPrintMsg] = useState(null);
+  const print = async () => { setPrintMsg("Printing…"); const p = await printBlocks(reportBlocks(r), { title: `${r.type} report ${r.code}`, copies: 1 }); setPrintMsg(p.ok ? "Sent to the printer" : p.error); };
   return (
     <Modal title={r ? `${r.type} report — ${r.code}` : "Till report"} onClose={onClose}>
       {error && <p className="f-body text-sm" style={{ color: C.danger }}>{error}</p>}
@@ -761,6 +765,7 @@ export function TillReportModal({ code, actions, onClose }) {
           )}
           {r.discountsByReason.length > 0 && <p className="text-xs" style={{ color: C.muted }}>Discounts: {r.discountsByReason.map((d) => `${d.reason} ${nairaFmt(d.amount)} (${d.n})`).join(" · ")}</p>}
           <Btn icon={Printer} full onClick={print}>Print {r.type} report</Btn>
+          {printMsg && <p className="text-xs text-center" style={{ color: C.muted }}>{printMsg}</p>}
         </div>
       )}
     </Modal>

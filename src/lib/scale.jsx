@@ -8,6 +8,7 @@ import React, { createContext, useCallback, useContext, useEffect, useRef, useSt
 import { Scale as ScaleIcon, Settings2, Plug, Unplug } from "lucide-react";
 import { C } from "./theme.js";
 import { Btn, Modal, Field, Select, Input } from "../components/ui.jsx";
+import { rememberPort, forgetRole, portFor } from "./hardware.js";
 
 const KEY = "bladeos.scale";
 const DEFAULTS = { baudRate: 9600, dataBits: 8, parity: "none", stopBits: 1, poll: "", unit: "kg" };
@@ -119,6 +120,7 @@ export function ScaleProvider({ children }) {
     if (!scaleSupported()) { setStatus("error"); setError("This browser can't talk to a scale — use Chrome or Edge on a computer."); return; }
     try {
       const port = await navigator.serial.requestPort();
+      rememberPort("scale", port);
       await stop();
       start(port);
     } catch (e) {
@@ -131,7 +133,7 @@ export function ScaleProvider({ children }) {
     portRef.current = null;
     await stop();
     setStatus("idle"); setReading(null);
-    try { await port?.forget?.(); } catch { /* older browsers */ }
+    forgetRole("scale");
   }, [stop]);
 
   const setSettings = useCallback(async (next) => {
@@ -144,7 +146,8 @@ export function ScaleProvider({ children }) {
   useEffect(() => {
     if (!scaleSupported()) return;
     let cancelled = false;
-    navigator.serial.getPorts().then((ports) => { if (!cancelled && ports[0] && !portRef.current) start(ports[0]); }).catch(() => {});
+    // Only the port recorded as the scale — never the receipt printer's.
+    portFor("scale").then((p) => { if (!cancelled && p && !portRef.current) start(p); }).catch(() => {});
     const onDisconnect = (e) => { if (e.target === portRef.current) { portRef.current = null; stop(); setStatus("idle"); setReading(null); } };
     navigator.serial.addEventListener?.("disconnect", onDisconnect);
     return () => { cancelled = true; navigator.serial.removeEventListener?.("disconnect", onDisconnect); stop(); };

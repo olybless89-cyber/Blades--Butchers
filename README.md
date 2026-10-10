@@ -106,6 +106,11 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
   - *X / Z reports:* managers print an X report mid-shift (from the POS or Approvals → cash-ups); the cashier gets the Z report
     after the blind close. Both show sales, discounts by reason, tenders, refunds, cleared tickets and cash.
   - *Shortcuts:* F2 search · F4 pay · F8 hold · F9 discount · Enter = next sale.
+  - *Hardware* (`src/lib/hardware.js`, **POS → Devices**, setup guide in `pos-setup/README.md`): receipt printers through the
+    Windows driver (silent printing via the `pos-setup/BladeOS-POS.bat` launcher) or ESC/POS on a COM port (auto-cut, QR,
+    cash-drawer kick on cash sales); 80 or 58 mm; auto-print and copies; USB/Bluetooth barcode scanners (Enter, Tab or no
+    suffix) with a scanner test; scale on its own port; and a customer screen on the terminal's second display showing
+    items, total and change. Settings are per till.
   - Refunds give back what was actually paid per item (after discounts). Till cash-up and bank reconciliation count each
     tender of a split payment separately.
 - **Business controls** (`server/business.js`):
@@ -147,6 +152,7 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
 
 ## Layout
 ```
+pos-setup/  BladeOS-POS.bat (Windows till launcher) · README.md (Licon / till hardware setup)
 server/   index.js · pos.js (sales, discounts, tender, held tickets, X/Z) · routes.js (writes) · controls.js (approvals, refunds) · operations.js (tills, temps, counts, trace, limits)
           business.js (purchase orders, payment reconciliation, HACCP) · backup.js + restore.js (backups)
           state.js (reads/KPIs) · stock.js (lots, FEFO) · auth.js + totp.js (sign-in) · seed.js · migrate.js

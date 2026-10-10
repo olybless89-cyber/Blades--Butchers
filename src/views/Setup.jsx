@@ -188,7 +188,8 @@ function ProductForm({ item, categories, onClose, actions }) {
           <Field label={`Selling price (₦/${f.unit})`}><Input mono type="number" min="0" step="1" value={f.price} onChange={set("price")} required /></Field>
           <Field label={`Cost price (₦/${f.unit})`}><Input mono type="number" min="0" step="1" value={f.costPrice} onChange={set("costPrice")} required /></Field>
           <Field label="Barcode (EAN / UPC)" hint="Scan it into this box" error={f.barcode && !/^\d{8,14}$/.test(f.barcode.trim()) ? "8–14 digits" : null}>
-            <Input mono value={f.barcode} onChange={set("barcode")} maxLength={14} inputMode="numeric" placeholder="optional" />
+            <Input mono value={f.barcode} onChange={set("barcode")} maxLength={14} inputMode="numeric" placeholder="optional" aria-label="Barcode"
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Tab") { if (e.key === "Enter") e.preventDefault(); } }} />
           </Field>
           <Field label="PLU" hint="Number on scale labels and the till keypad"><Input mono type="number" min="1" max="99999" step="1" value={f.plu} onChange={set("plu")} placeholder={isNew ? "auto" : ""} /></Field>
           <Field label="VAT (%)" hint="0 for exempt basic food; price includes VAT"><Input mono type="number" min="0" max="100" step="0.5" value={f.vatRate} onChange={set("vatRate")} /></Field>
