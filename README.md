@@ -88,6 +88,26 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
     requests for approval.
   - *Approval limits* (Business Setup → Controls, Owner/MD): what an Operations Manager may approve for write-offs,
     refunds and till variances; above that, Owner or MD.
+- **Point of sale** (`server/pos.js`, `src/views/POS.jsx`) — built to the standard of retail POS systems:
+  - *Scan or search:* one box takes a product barcode (EAN/UPC), a PLU, a name, or a **scale-printed label** (EAN-13
+    starting with 2: PLU + weight in grams, or price — set under *Business Setup → Receipt & Till*). A USB barcode scanner
+    works anywhere on the screen. Starting products have PLUs 1–11; new products get the next PLU.
+  - *Ticket:* weighed items go through a weight screen (or the scale); tap any line to change quantity, add a line discount
+    or remove it. Totals show subtotal, discount and VAT (per product, prices include VAT; basic food is 0%).
+  - *Discounts:* always with a reason. Operations Managers discount up to the *discount* limit (default 10%); cashiers need a
+    manager to approve on their till with **email + till PIN** (set from the account menu). Above the limit: Owner or MD.
+    5 wrong PINs lock that PIN for 15 minutes; every approval and wrong PIN is in the audit trail.
+  - *Tender:* Cash / Transfer / Card, any mix (split payment), on-screen keypad and quick-cash buttons, change due shown
+    before completing. Transfers and card payments take a sender or slip reference. Delivery or account customers can pay later.
+  - *Safe retries:* every ticket carries a unique reference, so a double tap or a dropped connection never charges twice.
+  - *Hold / recall:* park a ticket (any till can recall it). *Clear* needs a reason and is counted on the till report.
+  - *Receipt:* 80 mm, with business name, address, TIN, lines, discounts, VAT, tenders, change and a QR code of the order
+    number. Orders → *Reprint receipt* prints a marked COPY.
+  - *X / Z reports:* managers print an X report mid-shift (from the POS or Approvals → cash-ups); the cashier gets the Z report
+    after the blind close. Both show sales, discounts by reason, tenders, refunds, cleared tickets and cash.
+  - *Shortcuts:* F2 search · F4 pay · F8 hold · F9 discount · Enter = next sale.
+  - Refunds give back what was actually paid per item (after discounts). Till cash-up and bank reconciliation count each
+    tender of a split payment separately.
 - **Business controls** (`server/business.js`):
   - *Purchase orders:* raise → a different manager approves (Operations Managers up to the *purchase* limit; Owner/MD orders
     are approved on creation) → storekeepers receive deliveries only against an approved PO (weighed lines up to 5% over;
@@ -127,7 +147,7 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
 
 ## Layout
 ```
-server/   index.js · routes.js (writes) · controls.js (approvals, refunds) · operations.js (tills, temps, counts, trace, limits)
+server/   index.js · pos.js (sales, discounts, tender, held tickets, X/Z) · routes.js (writes) · controls.js (approvals, refunds) · operations.js (tills, temps, counts, trace, limits)
           business.js (purchase orders, payment reconciliation, HACCP) · backup.js + restore.js (backups)
           state.js (reads/KPIs) · stock.js (lots, FEFO) · auth.js + totp.js (sign-in) · seed.js · migrate.js
 migrations/  numbered .sql files, applied once each on boot
@@ -147,7 +167,7 @@ src/      App.jsx (shell) · views/ · components/ · lib/ · shared/permissions
 - **Schema changes:** add `migrations/002_*.sql`; it runs automatically on next deploy.
 - **Forgotten password / lost phone:** an Owner/Administrator resets it under *Administration → Staff Accounts*
   (Administrators can't reset leadership accounts — only the Owner can).
-- **Daily routine:** opening checks before trading; open tills with a float; log cold-room and freezer temperatures twice a
+- **Daily routine:** managers set a till approval PIN once (account menu); opening checks before trading; open tills with a float; log cold-room and freezer temperatures twice a
   day; reconcile yesterday's transfers and card takings to the bank and terminal; receive deliveries against purchase orders;
   closing clean-down; close tills and sign off cash-ups; write off anything past its use-by date.
   **Weekly:** blind count per location, pest-control and equipment checklists, verify the week's food-safety records.

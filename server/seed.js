@@ -38,9 +38,9 @@ export async function seedReference() {
     for (const name of RANCHES) await db.query("INSERT INTO ranches (name) VALUES ($1) ON CONFLICT (name) DO NOTHING", [name]);
     for (const [i, p] of PRODUCTS.entries()) {
       await db.query(
-        `INSERT INTO products (sku, name, category, unit, price, cost_price, min_stock, sort) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        `INSERT INTO products (sku, name, category, unit, price, cost_price, min_stock, sort, plu) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
          ON CONFLICT (sku) DO NOTHING`,
-        [...p, i]
+        [...p, i, i + 1]   // PLU 1, 2, 3… for scale-printed labels
       );
     }
     await db.query("INSERT INTO settings (key, value) VALUES ('reference_seeded', 'true'::jsonb)");

@@ -33,7 +33,10 @@ export function errorHandler(err, req, res, _next) {
     const msg = status === 404 ? "Not found" : err.type === "entity.parse.failed" ? "Request body isn't valid JSON." : status === 413 ? "Request is too large." : "Bad request.";
     return res.status(status).json({ error: msg });
   }
-  if (err.code === "23505") return res.status(409).json({ error: "That record already exists." });
+  if (err.code === "23505") {
+    const which = { products_barcode_uq: "That barcode is already on another product.", products_plu_uq: "That PLU is already used by another product." }[err.constraint];
+    return res.status(409).json({ error: which || "That record already exists." });
+  }
   if (err.code === "23514") return res.status(409).json({ error: "That change would break a stock or data rule." });
   console.error(err);
   res.status(500).json({ error: "Something went wrong on the server." });

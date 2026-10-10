@@ -5,13 +5,14 @@ import {
 } from "lucide-react";
 import { api, setUnauthorizedHandler } from "./lib/api.js";
 import { C, initials } from "./lib/theme.js";
-import { can, routeAllowed, PASSWORD_MIN } from "./shared/permissions.js";
+import { can, routeAllowed, PASSWORD_MIN, weakPin } from "./shared/permissions.js";
 import { Btn, Toast, ICONS, Modal, Field, Input, useBusy } from "./components/ui.jsx";
 import ButcherAI from "./components/ButcherAI.jsx";
 import { Dashboard, ReportsView, RoadmapView } from "./views/Overview.jsx";
 import { RanchView, ProcessingView } from "./views/Ranch.jsx";
 import { InventoryView } from "./views/Inventory.jsx";
-import { POSView, OrdersView, CustomersView, DeliveryView } from "./views/Sales.jsx";
+import { OrdersView, CustomersView, DeliveryView } from "./views/Sales.jsx";
+import { POSView } from "./views/POS.jsx";
 import { AdminView } from "./views/Admin.jsx";
 import { ProcurementView } from "./views/Procurement.jsx";
 import { MarketingView } from "./views/Marketing.jsx";
@@ -69,6 +70,7 @@ export default function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pwOpen, setPwOpen] = useState(false);
   const [mfaOpen, setMfaOpen] = useState(false);
+  const [pinOpen, setPinOpen] = useState(false);
   const [reportTab, setReportTab] = useState(null);
 
   const notify = useCallback((message, kind = "ok") => setToast({ message, kind, at: Date.now() }), []);
@@ -157,6 +159,13 @@ export default function App() {
     addRanch: (body) => act(() => api("/ranches", { method: "POST", body }), (r) => `${r.name} added`),
     updateRanch: (id, body, msg) => act(() => api(`/ranches/${id}`, { method: "PATCH", body }), msg),
     sell: (body) => act(() => api("/sales", { method: "POST", body }), (r) => `Sale ${r.code} completed — ₦${r.total.toLocaleString("en-NG")}`),
+    posAuthorize: (body) => api("/pos/authorize", { method: "POST", body }).catch((e) => ({ error: e.message })),
+    holdTicket: (body) => act(() => api("/pos/held", { method: "POST", body }), (r) => `Ticket held — ${r.label}`),
+    recallTicket: (id) => act(() => api(`/pos/held/${id}/recall`, { method: "POST" }), (r) => `${r.label} recalled`),
+    voidTicket: (body) => act(() => api("/pos/void", { method: "POST", body }), "Ticket cleared"),
+    tillReport: (code) => api(`/till/${encodeURIComponent(code)}/report`),
+    setPosPin: (body) => act(() => api("/auth/pos-pin", { method: "POST", body }), "Till approval PIN saved"),
+    saveBusiness: (body) => act(() => api("/settings/business", { method: "PATCH", body }), "Receipt details saved"),
     updateOrder: (code, body) => act(() => api(`/orders/${encodeURIComponent(code)}`, { method: "PATCH", body }), `${code} updated`),
     getOrder: (code) => api(`/orders/${encodeURIComponent(code)}`),
     addCustomer: (body) => act(() => api("/customers", { method: "POST", body }), (r) => `${r.name} added`),
@@ -242,6 +251,7 @@ export default function App() {
           <MfaEnrol onCancel={() => setMfaOpen(false)} onDone={() => { setMfaOpen(false); setUser({ ...user, mfaEnabled: true }); notify("Two-step sign-in is on"); }} />
         </Modal>
       )}
+      {pinOpen && <PinModal onClose={() => setPinOpen(false)} onSave={async (body) => { if (await actions.setPosPin(body)) { setUser({ ...user, posPinSet: true }); setPinOpen(false); } }} />}
       {pwOpen && (
         <Modal title="Change Password" onClose={() => setPwOpen(false)}>
           <PasswordForm onDone={() => { notify("Password changed"); setPwOpen(false); }} />
@@ -264,7 +274,7 @@ export default function App() {
         <TopBar
           notifications={data.notifications} canAI={permit("ai.use")} setAiOpen={setAiOpen}
           onMenuClick={() => setMobileNavOpen(true)} onNavigate={goTo} user={user}
-          onPassword={() => setPwOpen(true)} onMfa={() => setMfaOpen(true)} onLogout={logout} onRefresh={refresh} loadError={loadError}
+          onPassword={() => setPwOpen(true)} onMfa={() => setMfaOpen(true)} onPin={() => setPinOpen(true)} onLogout={logout} onRefresh={refresh} loadError={loadError}
         />
         <main className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-7">
           {route === "dashboard" && <Dashboard data={data} onOpenReport={setReportTab} onNavigate={goTo} />}
@@ -460,7 +470,7 @@ function Sidebar({ route, setRoute, mobileOpen, onClose, user, onLogout, badges 
 
 const TONE = { warn: C.warn, gold: C.gold, burgundy: C.burgundy, danger: C.danger, muted: C.muted, ok: C.ok };
 
-function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate, user, onPassword, onMfa, onLogout, onRefresh, loadError }) {
+function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate, user, onPassword, onMfa, onPin, onLogout, onRefresh, loadError }) {
   const [open, setOpen] = useState(null); // "notif" | "user" | null
   const ref = useRef(null);
   useEffect(() => {
@@ -517,6 +527,11 @@ function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate,
             <button onClick={() => { setOpen(null); onPassword(); }} className="w-full text-left flex items-center gap-2.5 px-4 py-2.5 f-body text-sm hover:bg-stone-50" style={{ color: C.ink }}>
               <KeyRound size={14} /> Change password
             </button>
+            {can(user.roles, "pos.discount") && (
+              <button onClick={() => { setOpen(null); onPin(); }} className="w-full text-left flex items-center gap-2.5 px-4 py-2.5 f-body text-sm hover:bg-stone-50" style={{ color: C.ink }}>
+                <KeyRound size={14} /> {user.posPinSet ? "Change" : "Set"} till approval PIN
+              </button>
+            )}
             {!user.mfaEnabled && (
               <button onClick={() => { setOpen(null); onMfa(); }} className="w-full text-left flex items-center gap-2.5 px-4 py-2.5 f-body text-sm hover:bg-stone-50" style={{ color: C.ink }}>
                 <ShieldCheck size={14} /> Turn on two-step sign-in
@@ -529,5 +544,25 @@ function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate,
         )}
       </div>
     </header>
+  );
+}
+
+/** Managers' till PIN: approves discounts at another person's till. */
+function PinModal({ onClose, onSave }) {
+  const [password, setPassword] = useState("");
+  const [pin, setPin] = useState("");
+  const [busy, run] = useBusy();
+  const weak = pin.length >= 4 && weakPin(pin);
+  return (
+    <Modal title="Till approval PIN" onClose={onClose}>
+      <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); run(() => onSave({ password, pin })); }}>
+        <p className="f-body text-sm" style={{ color: C.muted }}>Cashiers call you over for discounts above their limit. You type your email and this PIN on their till. Keep it to yourself.</p>
+        <Field label="New PIN (4–6 digits)" error={weak ? "Too easy to guess — avoid 1111 or 1234." : null}>
+          <Input mono type="password" inputMode="numeric" maxLength={6} value={pin} onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))} autoFocus aria-label="New PIN" />
+        </Field>
+        <Field label="Your password"><Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" aria-label="Your password" /></Field>
+        <Btn type="submit" icon={KeyRound} full busy={busy} disabled={!/^\d{4,6}$/.test(pin) || weak || !password}>Save PIN</Btn>
+      </form>
+    </Modal>
   );
 }

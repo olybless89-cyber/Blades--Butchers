@@ -25,10 +25,10 @@ const plural = (n, one, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 async function expectedFor(db, day, method) {
   const r = (await db.query(
     `SELECT
-       (SELECT COALESCE(sum(total), 0) FROM orders WHERE payment_status = 'Paid' AND status <> 'Cancelled' AND payment_method = $2
-          AND (paid_at AT TIME ZONE 'Africa/Lagos')::date = $1) AS takings,
-       (SELECT count(*)::int FROM orders WHERE payment_status = 'Paid' AND status <> 'Cancelled' AND payment_method = $2
-          AND (paid_at AT TIME ZONE 'Africa/Lagos')::date = $1) AS orders,
+       (SELECT COALESCE(sum(p.amount), 0) FROM order_payments p JOIN orders o ON o.id = p.order_id WHERE o.status <> 'Cancelled' AND p.method = $2
+          AND (p.paid_at AT TIME ZONE 'Africa/Lagos')::date = $1) AS takings,
+       (SELECT count(*)::int FROM order_payments p JOIN orders o ON o.id = p.order_id WHERE o.status <> 'Cancelled' AND p.method = $2
+          AND (p.paid_at AT TIME ZONE 'Africa/Lagos')::date = $1) AS orders,
        (SELECT COALESCE(sum(amount), 0) FROM refunds WHERE status = 'Approved' AND method = $2
           AND (decided_at AT TIME ZONE 'Africa/Lagos')::date = $1) AS refunds`, [day, method])).rows[0];
   return { takings: r.takings, refunds: r.refunds, orders: r.orders, expected: r.takings - r.refunds };
@@ -130,10 +130,10 @@ export function businessRoutes(r) {
   r.get("/reconciliations/:day/:method", requirePerm("payments.reconcile"), ah(async (req, res) => {
     const day = parse(isoDate, req.params.day), method = parse(z.enum(RECON_METHODS), req.params.method);
     const [orders, refunds] = await Promise.all([
-      query(`SELECT o.code, o.total, o.payment_ref, o.paid_at, o.channel, c.name AS customer, u.name AS who FROM orders o
-             LEFT JOIN customers c ON c.id = o.customer_id LEFT JOIN users u ON u.id = o.user_id
-             WHERE o.payment_status = 'Paid' AND o.status <> 'Cancelled' AND o.payment_method = $2 AND (o.paid_at AT TIME ZONE 'Africa/Lagos')::date = $1
-             ORDER BY o.paid_at`, [day, method]),
+      query(`SELECT o.code, p.amount AS total, p.ref AS payment_ref, p.paid_at, o.channel, c.name AS customer, u.name AS who FROM order_payments p
+             JOIN orders o ON o.id = p.order_id LEFT JOIN customers c ON c.id = o.customer_id LEFT JOIN users u ON u.id = p.user_id
+             WHERE o.status <> 'Cancelled' AND p.method = $2 AND (p.paid_at AT TIME ZONE 'Africa/Lagos')::date = $1
+             ORDER BY p.paid_at`, [day, method]),
       query(`SELECT f.code, f.amount, f.decided_at, o.code AS order_code FROM refunds f JOIN orders o ON o.id = f.order_id
              WHERE f.status = 'Approved' AND f.method = $2 AND (f.decided_at AT TIME ZONE 'Africa/Lagos')::date = $1 ORDER BY f.decided_at`, [day, method]),
     ]);
@@ -443,10 +443,10 @@ export async function paymentsState(userId) {
   const days = (await query(
     `WITH d AS (SELECT generate_series(${TODAY} - 13, ${TODAY}, interval '1 day')::date AS day), m AS (SELECT unnest($1::text[]) AS method)
      SELECT to_char(d.day, 'YYYY-MM-DD') AS day, m.method,
-       (SELECT COALESCE(sum(total), 0) FROM orders o WHERE o.payment_status = 'Paid' AND o.status <> 'Cancelled' AND o.payment_method = m.method
-          AND (o.paid_at AT TIME ZONE 'Africa/Lagos')::date = d.day) AS takings,
-       (SELECT count(*)::int FROM orders o WHERE o.payment_status = 'Paid' AND o.status <> 'Cancelled' AND o.payment_method = m.method
-          AND (o.paid_at AT TIME ZONE 'Africa/Lagos')::date = d.day) AS orders,
+       (SELECT COALESCE(sum(p.amount), 0) FROM order_payments p JOIN orders o ON o.id = p.order_id WHERE o.status <> 'Cancelled' AND p.method = m.method
+          AND (p.paid_at AT TIME ZONE 'Africa/Lagos')::date = d.day) AS takings,
+       (SELECT count(*)::int FROM order_payments p JOIN orders o ON o.id = p.order_id WHERE o.status <> 'Cancelled' AND p.method = m.method
+          AND (p.paid_at AT TIME ZONE 'Africa/Lagos')::date = d.day) AS orders,
        (SELECT COALESCE(sum(amount), 0) FROM refunds f WHERE f.status = 'Approved' AND f.method = m.method
           AND (f.decided_at AT TIME ZONE 'Africa/Lagos')::date = d.day) AS refunds
      FROM d CROSS JOIN m ORDER BY d.day DESC, m.method`, [RECON_METHODS])).rows;
@@ -524,7 +524,7 @@ export async function businessNotifications(user) {
     const p = (await query(
       `WITH d AS (SELECT generate_series(${TODAY} - 7, ${TODAY} - 1, interval '1 day')::date AS day)
        SELECT count(*)::int AS n FROM d CROSS JOIN unnest($1::text[]) m(method)
-       WHERE EXISTS (SELECT 1 FROM orders o WHERE o.payment_status = 'Paid' AND o.status <> 'Cancelled' AND o.payment_method = m.method AND (o.paid_at AT TIME ZONE 'Africa/Lagos')::date = d.day)
+       WHERE EXISTS (SELECT 1 FROM order_payments p JOIN orders o ON o.id = p.order_id WHERE o.status <> 'Cancelled' AND p.method = m.method AND (p.paid_at AT TIME ZONE 'Africa/Lagos')::date = d.day)
          AND NOT EXISTS (SELECT 1 FROM payment_reconciliations r WHERE r.day = d.day AND r.method = m.method)`, [RECON_METHODS])).rows[0];
     if (p.n) out.push({ icon: "DollarSign", tone: "warn", route: "payments", text: `${plural(p.n, "day")} of transfer / card takings not yet matched to the bank or terminal statement.` });
     const w = (await query("SELECT count(*)::int AS n FROM payment_reconciliations WHERE status = 'Recorded' AND recorded_by <> $1", [user.id])).rows[0];

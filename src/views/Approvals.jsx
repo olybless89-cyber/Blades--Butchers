@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Check, X, Undo2, ClipboardCheck, PackageX, ReceiptText, Info, Wallet } from "lucide-react";
 import { C, nairaFmt } from "../lib/theme.js";
+import { TillReportModal } from "./POS.jsx";
 import { KpiCard, SectionHeader, Btn, StatusPill, Modal, Field, Input, Card, Empty, useBusy } from "../components/ui.jsx";
 
 /** Approvals inbox: stock write-offs / count corrections and refunds (maker-checker). */
@@ -10,6 +11,7 @@ export function ApprovalsView({ data, actions, permit = () => false }) {
   const isExec = permit("stock.adjust.direct"); // Owner / MD: no approval limit
   const overLimit = (x) => !isExec && (x.type === "adjustments" ? x.value != null && x.value > limits.adjustment : x.amount > limits.refund);
   const [signing, setSigning] = useState(null);
+  const [reportCode, setReportCode] = useState(null);
   const [rejecting, setRejecting] = useState(null); // { kind, code }
   const [busyCode, setBusyCode] = useState(null);
   const [tab, setTab] = useState("pending");
@@ -44,6 +46,7 @@ export function ApprovalsView({ data, actions, permit = () => false }) {
     <div>
       {signing && <SignOffModal till={signing} limit={limits.tillVariance} isExec={isExec} onClose={() => setSigning(null)}
         onSign={async (note) => { if (await actions.reviewTill(signing.code, note)) setSigning(null); }} />}
+      {reportCode && <TillReportModal code={reportCode} actions={actions} onClose={() => setReportCode(null)} />}
       {rejecting && <RejectModal item={rejecting} onClose={() => setRejecting(null)} onReject={async (note) => { if (await decide(rejecting, "reject", note)) setRejecting(null); }} />}
       <SectionHeader eyebrow="Controls" title="Approvals" />
 
@@ -72,7 +75,7 @@ export function ApprovalsView({ data, actions, permit = () => false }) {
         {openTills.length > 0 && <p className="f-body text-xs mb-3" style={{ color: C.muted }}>Open now: {openTills.map((t) => `${t.cashier} (${t.code}, since ${t.openedAt})`).join(" · ")}</p>}
         {cashups.length === 0 && <Card><Empty>No cash-ups in the last 14 days.</Empty></Card>}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {cashups.map((t) => <CashupCard key={t.code} t={t} onSign={() => setSigning(t)} />)}
+          {cashups.map((t) => <CashupCard key={t.code} t={t} onReport={setReportCode} onSign={() => setSigning(t)} />)}
         </div>
       </>)}
       {tab !== "cash" && list.length === 0 && <Card><Empty>{tab === "pending" ? "Nothing waiting." : "No decisions in the last 30 days."}</Empty></Card>}
@@ -145,7 +148,7 @@ function RejectModal({ item, onClose, onReject }) {
   );
 }
 
-function CashupCard({ t, onSign }) {
+function CashupCard({ t, onSign, onReport }) {
   const v = t.variance;
   return (
     <Card>
@@ -170,7 +173,10 @@ function CashupCard({ t, onSign }) {
       {t.byMethod.length > 0 && <div className="f-body text-[11px] mb-2" style={{ color: C.muted }}>Takings: {t.byMethod.map((m) => `${m.method} ${nairaFmt(m.amount)} (${m.orders})`).join(" · ")}</div>}
       {t.closeNote && <div className="f-body text-[11px] mb-2" style={{ color: C.muted }}>Cashier's note: "{t.closeNote}"</div>}
       {t.status === "Reviewed" && <div className="f-body text-[11px]" style={{ color: C.muted }}>Signed off by {t.reviewer} · {t.reviewedAt}{t.reviewNote ? ` — "${t.reviewNote}"` : ""}</div>}
-      {t.status === "Closed" && !t.mine && <Btn small icon={Check} onClick={onSign}>Sign Off</Btn>}
+      <div className="flex gap-1.5">
+        {onReport && <Btn small variant="ghost" icon={ReceiptText} onClick={() => onReport(t.code)}>Report</Btn>}
+        {t.status === "Closed" && !t.mine && <Btn small icon={Check} onClick={onSign}>Sign Off</Btn>}
+      </div>
       {t.status === "Closed" && t.mine && <span className="f-body text-[11px]" style={{ color: C.muted }}>Your cash-up — another manager signs it off.</span>}
     </Card>
   );

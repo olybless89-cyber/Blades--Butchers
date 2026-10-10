@@ -7,6 +7,7 @@ import { buildState } from "./state.js";
 import { addStock, allocateStock, transferStock, returnAllocations } from "./stock.js";
 import { openTill, operationRoutes } from "./operations.js";
 import { businessRoutes } from "./business.js";
+import { posRoutes, recordPayment } from "./pos.js";
 import { ROLES, LEADERSHIP_ROLES, COMBINABLE_ROLES, ORDER_FLOW, can, PROCESSING_SKUS, CONTENT_STATUSES } from "../src/shared/permissions.js";
 import { ah, parse, audit, bad, notFound, conflict, HttpError, round2, round3, fmtDateTime } from "./util.js";
 
@@ -200,70 +201,6 @@ export function apiRouter() {
     res.json(out);
   }));
 
-  /* ------------------------------------------------------------ sales (POS) */
-  r.post("/sales", requirePerm("pos.use"), ah(async (req, res) => {
-    const b = parse(z.object({
-      customerId: id.nullable().optional(),
-      items: z.array(z.object({ sku: z.string().min(1), qty: qtyNum, scale: z.boolean().optional() })).min(1).max(50),
-      fulfilment: z.enum(["Walk-in", "Delivery"]).default("Walk-in"),
-      area: z.string().trim().max(60).optional(),
-      paymentStatus: z.enum(["Paid", "Pending"]).default("Paid"),
-      paymentMethod: z.enum(["Cash", "Transfer", "POS Card"]).default("Cash"),
-      paymentRef: z.string().trim().max(60).optional().or(z.literal("")),   // transfer sender / terminal slip number
-    }), req.body);
-    if (b.fulfilment === "Delivery" && !b.area) throw bad("Delivery orders need an area.");
-    const out = await tx(async (db) => {
-      // Every sale belongs to the seller's open till session, so the drawer can be reconciled at close.
-      const till = await openTill(db, req.user.id);
-      if (!till) throw conflict("Open your till before selling.");
-      let customer = null;
-      if (b.customerId) {
-        customer = (await db.query("SELECT * FROM customers WHERE id = $1", [b.customerId])).rows[0];
-        if (!customer) throw notFound("Customer not found.");
-      }
-      if (b.fulfilment === "Delivery" && !customer) throw bad("Pick a customer for delivery orders.");
-
-      const n = (await db.query("SELECT nextval('order_code_seq') AS n")).rows[0].n;
-      const code = `ORD-${n}`;
-      // Lock products in a stable order to avoid deadlocks between concurrent tills.
-      const skus = [...new Set(b.items.map((i) => i.sku))].sort();
-      const prods = (await db.query("SELECT * FROM products WHERE sku = ANY($1) AND active ORDER BY sku FOR UPDATE", [skus])).rows;
-      const bySku = Object.fromEntries(prods.map((p) => [p.sku, p]));
-
-      let total = 0;
-      const lines = [];
-      for (const it of b.items) {
-        const p = bySku[it.sku];
-        if (!p) throw notFound(`Product ${it.sku} not found.`);
-        if (p.unit !== "KG" && !Number.isInteger(it.qty)) throw bad(`${p.name} must be sold in whole ${p.unit.toLowerCase()}s.`);
-        const qty = round3(it.qty);
-        const allocations = await allocateStock(db, { sku: p.sku, qty, kind: "sale", reference: code, userId: req.user.id });
-        const subtotal = Math.round(qty * p.price);
-        total += subtotal;
-        lines.push({ sku: p.sku, qty, unitPrice: p.price, subtotal, allocations, scale: p.unit === "KG" && it.scale === true });
-      }
-
-      const isDelivery = b.fulfilment === "Delivery";
-      const { rows } = await db.query(
-        `INSERT INTO orders (code, customer_id, channel, status, payment_status, payment_method, total, area, user_id, till_session_id, cash_session_id, paid_at, payment_ref)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, CASE WHEN $5 = 'Paid' THEN now() END, $12) RETURNING id`,
-        [code, customer?.id ?? null, isDelivery ? "Delivery" : "POS", isDelivery ? "Confirmed" : "Delivered",
-         b.paymentStatus, b.paymentMethod, total, isDelivery ? b.area : "Walk-in", req.user.id, till.id,
-         b.paymentStatus === "Paid" && b.paymentMethod === "Cash" ? till.id : null,
-         b.paymentStatus === "Paid" && b.paymentMethod !== "Cash" ? b.paymentRef || null : null]
-      );
-      for (const l of lines) {
-        await db.query(
-          "INSERT INTO order_items (order_id, product_sku, qty, unit_price, subtotal, allocations, scale_weighed) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-          [rows[0].id, l.sku, l.qty, l.unitPrice, l.subtotal, JSON.stringify(l.allocations), l.scale]
-        );
-      }
-      await audit(db, req.user.id, `Sale ${code}`, `₦${total.toLocaleString("en-NG")} · ${customer?.name ?? "Walk-in"} · ${b.paymentStatus}`);
-      return { code, total };
-    });
-    res.status(201).json(out);
-  }));
-
   /* ------------------------------------------------------------ orders */
   r.patch("/orders/:code", requirePerm("orders.edit"), ah(async (req, res) => {
     const b = parse(z.object({
@@ -311,6 +248,11 @@ export function apiRouter() {
       await db.query(`UPDATE orders SET status = $2, payment_status = $3, payment_method = $4, cash_session_id = $5, updated_at = now(),
                         paid_at = CASE WHEN $6 THEN now() ELSE paid_at END, payment_ref = CASE WHEN $6 THEN $7 ELSE payment_ref END WHERE id = $1`,
         [o.id, b.status ?? o.status, b.paymentStatus ?? o.payment_status, method, cashSession, nowPaid, nowPaid && method !== "Cash" ? b.paymentRef || null : null]);
+      if (nowPaid) {
+        const till = await openTill(db, req.user.id);
+        await recordPayment(db, { orderId: o.id, method, amount: o.total, tendered: method === "Cash" ? o.total : null,
+          ref: method === "Cash" ? null : b.paymentRef || null, tillId: method === "Cash" ? cashSession : till?.id ?? null, userId: req.user.id });
+      }
       await audit(db, req.user.id, `Updated ${o.code}`, changes.join(", "));
       return { ok: true };
     });
@@ -323,22 +265,27 @@ export function apiRouter() {
        FROM orders o LEFT JOIN customers c ON c.id = o.customer_id LEFT JOIN users u ON u.id = o.user_id WHERE o.code = $1`,
       [req.params.code])).rows[0];
     if (!o) throw notFound("Order not found.");
-    const [items, refunds] = await Promise.all([
-      query(`SELECT oi.id, oi.qty, oi.unit_price, oi.subtotal, oi.refunded_qty, p.name, p.unit,
+    const [items, refunds, payments] = await Promise.all([
+      query(`SELECT oi.id, oi.qty, oi.unit_price, oi.subtotal, oi.discount, oi.vat_rate, oi.tax, oi.refunded_qty, p.name, p.unit,
                COALESCE((SELECT sum(ri.qty) FROM refund_items ri JOIN refunds rf ON rf.id = ri.refund_id
                          WHERE ri.order_item_id = oi.id AND rf.status = 'Pending'), 0) AS pending_qty
              FROM order_items oi JOIN products p ON p.sku = oi.product_sku WHERE oi.order_id = $1 ORDER BY oi.id`, [o.id]),
       query(`SELECT rf.code, rf.amount, rf.reason, rf.status, rf.restock, rf.requested_at, u.name AS requested_by, d.name AS decided_by
              FROM refunds rf JOIN users u ON u.id = rf.requested_by LEFT JOIN users d ON d.id = rf.decided_by
              WHERE rf.order_id = $1 ORDER BY rf.requested_at DESC`, [o.id]),
+      query(`SELECT method, amount, tendered, ref, paid_at FROM order_payments WHERE order_id = $1 ORDER BY id`, [o.id]),
     ]);
     const refundable = o.status === "Delivered" && o.payment_status === "Paid";
     res.json({
       code: o.code, customer: o.customer_name ?? "Walk-in Customer", phone: o.customer_phone, staff: o.staff_name,
       channel: o.channel, status: o.status, payment: o.payment_status, paymentMethod: o.payment_method, paymentRef: o.payment_ref, paidAt: o.paid_at ? fmtDateTime(o.paid_at) : null,
       total: o.total, refunded: o.refunded, netTotal: o.net_total, area: o.area, createdAt: o.created_at, refundable,
+      gross: o.gross_total ?? o.total, discount: o.discount_total, discountReason: o.discount_reason, tax: o.tax_total, change: o.change_given,
+      payments: payments.rows.map((x) => ({ method: x.method, amount: x.amount, tendered: x.tendered, ref: x.ref, at: fmtDateTime(x.paid_at) })),
       items: items.rows.map((i) => ({
-        id: i.id, name: i.name, unit: i.unit, qty: i.qty, price: i.unit_price, subtotal: i.subtotal, refundedQty: i.refunded_qty,
+        // price = what was actually paid per unit after discounts, so refunds give back exactly that
+        id: i.id, name: i.name, unit: i.unit, qty: i.qty, listPrice: i.unit_price, price: i.qty ? i.subtotal / i.qty : i.unit_price, subtotal: i.subtotal,
+        discount: i.discount, vatRate: i.vat_rate, tax: i.tax, refundedQty: i.refunded_qty,
         refundableQty: refundable ? round3(i.qty - i.refunded_qty - i.pending_qty) : 0,
       })),
       refunds: refunds.rows.map((x) => ({ code: x.code, amount: x.amount, reason: x.reason, status: x.status, restock: x.restock, requestedBy: x.requested_by, decidedBy: x.decided_by, at: x.requested_at })),
@@ -373,6 +320,9 @@ export function apiRouter() {
     costPrice: money,
     min: z.coerce.number().min(0).max(1e6),
     shelfLife: z.coerce.number().int().min(1).max(730).optional(),
+    barcode: z.string().trim().regex(/^\d{8,14}$/, "8–14 digits (EAN / UPC)").nullable().optional().or(z.literal("")),
+    plu: z.coerce.number().int().min(1).max(99999).nullable().optional().or(z.literal("")),
+    vatRate: z.coerce.number().min(0).max(100).optional(),
   });
 
   r.post("/products", requirePerm("products.edit"), ah(async (req, res) => {
@@ -383,9 +333,11 @@ export function apiRouter() {
       const clash = (await db.query("SELECT sku, active FROM products WHERE sku = $1 OR lower(name) = lower($2)", [sku, b.name])).rows[0];
       if (clash) throw conflict(clash.sku === sku ? `SKU ${sku} is already used${clash.active ? "" : " by a retired product"}.` : `A product called "${b.name}" already exists.`);
       const sort = (await db.query("SELECT COALESCE(max(sort), 0) + 1 AS s FROM products")).rows[0].s;
+      const plu = b.plu || (await db.query("SELECT COALESCE(max(plu), 0) + 1 AS n FROM products")).rows[0].n;  // next free PLU
       await db.query(
-        "INSERT INTO products (sku, name, category, unit, price, cost_price, min_stock, sort, shelf_life_days) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-        [sku, b.name, b.category, b.unit, b.price, b.costPrice, b.min, sort, b.shelfLife ?? 5]
+        `INSERT INTO products (sku, name, category, unit, price, cost_price, min_stock, sort, shelf_life_days, barcode, plu, vat_rate)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        [sku, b.name, b.category, b.unit, b.price, b.costPrice, b.min, sort, b.shelfLife ?? 5, b.barcode || null, plu, b.vatRate ?? 0]
       );
       await audit(db, req.user.id, `Added product ${b.name}`, `${sku} · ₦${b.price.toLocaleString("en-NG")}/${b.unit}`);
       return { sku, name: b.name };
@@ -411,9 +363,10 @@ export function apiRouter() {
         const held = (await db.query("SELECT COALESCE(sum(qty), 0) AS q FROM stock WHERE product_sku = $1", [cur.sku])).rows[0].q;
         if (held > 0) throw conflict(`${cur.name} still has ${round3(held)} ${cur.unit} in stock. Sell, write off or correct it to zero first.`);
       }
-      const n = { name: b.name ?? cur.name, category: b.category ?? cur.category, unit: b.unit ?? cur.unit, price: b.price ?? cur.price, cost: b.costPrice ?? cur.cost_price, min: b.min ?? cur.min_stock, active: b.active ?? cur.active, shelf: b.shelfLife ?? cur.shelf_life_days };
-      await db.query("UPDATE products SET name=$2, category=$3, unit=$4, price=$5, cost_price=$6, min_stock=$7, active=$8, shelf_life_days=$9 WHERE sku=$1",
-        [cur.sku, n.name, n.category, n.unit, n.price, n.cost, n.min, n.active, n.shelf]);
+      const n = { name: b.name ?? cur.name, category: b.category ?? cur.category, unit: b.unit ?? cur.unit, price: b.price ?? cur.price, cost: b.costPrice ?? cur.cost_price, min: b.min ?? cur.min_stock, active: b.active ?? cur.active, shelf: b.shelfLife ?? cur.shelf_life_days,
+        barcode: b.barcode !== undefined ? b.barcode || null : cur.barcode, plu: b.plu !== undefined ? b.plu || null : cur.plu, vat: b.vatRate ?? Number(cur.vat_rate) };
+      await db.query("UPDATE products SET name=$2, category=$3, unit=$4, price=$5, cost_price=$6, min_stock=$7, active=$8, shelf_life_days=$9, barcode=$10, plu=$11, vat_rate=$12 WHERE sku=$1",
+        [cur.sku, n.name, n.category, n.unit, n.price, n.cost, n.min, n.active, n.shelf, n.barcode, n.plu, n.vat]);
       const fmt = (v) => `₦${v.toLocaleString("en-NG")}`;
       const ch = [
         n.name !== cur.name && `renamed from ${cur.name}`,
@@ -424,6 +377,9 @@ export function apiRouter() {
         n.min !== cur.min_stock && `min stock ${cur.min_stock} → ${n.min}`,
         n.active !== cur.active && (n.active ? "restored" : "retired"),
         n.shelf !== cur.shelf_life_days && `shelf life ${cur.shelf_life_days} → ${n.shelf} days`,
+        n.barcode !== cur.barcode && `barcode → ${n.barcode ?? "none"}`,
+        n.plu !== cur.plu && `PLU → ${n.plu ?? "none"}`,
+        n.vat !== Number(cur.vat_rate) && `VAT ${Number(cur.vat_rate)}% → ${n.vat}%`,
       ].filter(Boolean);
       if (ch.length) await audit(db, req.user.id, `Updated ${n.name}`, ch.join(", "));
       return { ok: true };
@@ -698,6 +654,7 @@ export function apiRouter() {
   controlRoutes(r);
   operationRoutes(r);
   businessRoutes(r);
+  posRoutes(r);
 
   r.use((req, _res, next) => next(new HttpError(404, "Unknown API endpoint.")));
   return r;

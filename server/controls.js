@@ -145,13 +145,16 @@ export function controlRoutes(r) {
       for (const it of b.items) {
         const row = (await db.query(
           `SELECT oi.*, p.name, p.unit, COALESCE((SELECT sum(ri.qty) FROM refund_items ri JOIN refunds rf ON rf.id = ri.refund_id
-             WHERE ri.order_item_id = oi.id AND rf.status = 'Pending'), 0) AS pending
+             WHERE ri.order_item_id = oi.id AND rf.status = 'Pending'), 0) AS pending,
+             COALESCE((SELECT sum(ri.amount) FROM refund_items ri JOIN refunds rf ON rf.id = ri.refund_id
+             WHERE ri.order_item_id = oi.id AND rf.status = 'Pending'), 0) AS pending_amount
            FROM order_items oi JOIN products p ON p.sku = oi.product_sku WHERE oi.id = $1 AND oi.order_id = $2`, [it.itemId, o.id])).rows[0];
         if (!row) throw bad("That item isn't on this order.");
         if (row.unit !== "KG" && !Number.isInteger(it.qty)) throw bad(`${row.name} is refunded in whole ${row.unit.toLowerCase()}s.`);
         const left = round3(row.qty - row.refunded_qty - row.pending);
         if (it.qty > left + 1e-9) throw conflict(`Only ${left} ${row.unit} of ${row.name} can still be refunded.`);
-        const amt = Math.round(it.qty * row.unit_price);
+        // Refund what was actually paid (after discounts). The last of a line refunds exactly what's left, so pennies never drift.
+        const amt = it.qty >= left - 1e-9 ? row.subtotal - row.refunded_amount - row.pending_amount : Math.round((it.qty * row.subtotal) / row.qty);
         amount += amt;
         lines.push({ id: row.id, qty: round3(it.qty), amount: amt, name: row.name, unit: row.unit });
       }

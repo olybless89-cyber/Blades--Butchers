@@ -58,6 +58,7 @@ export const PERMISSIONS = {
 
   // Sales
   "pos.use":                [...MGMT, "Cashier"],
+  "pos.discount":           MGMT,                                      // give / authorise discounts (manager PIN at the till), up to limit
   "till.use":               [...MGMT, "Cashier", "Delivery Manager"],  // open/close own till or cash bag
   "till.review":            MGMT,                                      // sign off other people's cash-ups
   "orders.view":            [...MGMT, "Cashier", "Delivery Manager", "Marketing Manager"],
@@ -150,6 +151,12 @@ export const RESTOCK_REASON = "Rung up in error — goods never left the counter
 export const REFUND_REASONS = [RESTOCK_REASON, "Quality complaint", "Short weight / overcharged", "Wrong item supplied", "Late or failed delivery"];
 
 export const PASSWORD_MIN = 10;
+
+// POS
+export const DISCOUNT_REASONS = ["Loyal customer", "Bulk purchase", "Short-dated stock", "Price match", "Staff purchase", "Service recovery"];
+export const QUICK_CASH = [500, 1000, 2000, 5000, 10000, 20000];   // naira notes for fast cash tender
+/** A manager PIN can't be all one digit or a straight run. */
+export const weakPin = (p) => /^(\d)\1+$/.test(p) || "0123456789".includes(p) || "9876543210".includes(p);
 
 /** Two-step sign-in is mandatory for these roles. */
 export const MFA_REQUIRED_ROLES = LEADERSHIP_ROLES;

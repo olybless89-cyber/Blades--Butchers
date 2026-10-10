@@ -2,6 +2,7 @@ import { query } from "./db.js";
 import { can, ROLES, APPROVAL_PERMS, EXPIRY_WARN_DAYS } from "../src/shared/permissions.js";
 import { approvalLimits, tillSummary } from "./operations.js";
 import { fmtDate, fmtShort, fmtDateTime, round2 } from "./util.js";
+import { posState, businessProfile } from "./pos.js";
 import { backupsState, paymentsState, purchasesState, foodSafetyState, businessNotifications } from "./business.js";
 
 // SQL snippets — every "day" and "month" is measured in Lagos time.
@@ -28,7 +29,7 @@ async function meta() {
 async function inventory() {
   const [rows, lots] = await Promise.all([
     many(`
-      SELECT p.sku, p.name, p.category, p.unit, p.price, p.cost_price, p.min_stock, p.shelf_life_days,
+      SELECT p.sku, p.name, p.category, p.unit, p.price, p.cost_price, p.min_stock, p.shelf_life_days, p.barcode, p.plu, p.vat_rate,
         COALESCE(sum(s.qty), 0) AS qty,
         COALESCE(json_agg(json_build_object('name', l.name, 'qty', s.qty, 'batch', s.last_batch) ORDER BY l.sells_first DESC, s.qty DESC)
           FILTER (WHERE s.qty > 0), '[]') AS locations
@@ -50,6 +51,7 @@ async function inventory() {
     const expiredQty = round2(mine.filter((l) => l.status === "Expired").reduce((s, l) => s + l.qty, 0));
     return {
       sku: r.sku, name: r.name, cat: r.category, unit: r.unit, price: r.price, costPrice: r.cost_price, shelfLife: r.shelf_life_days,
+      barcode: r.barcode, plu: r.plu, vatRate: Number(r.vat_rate) || 0,
       min: r.min_stock, qty: round2(r.qty), expiredQty, sellable: round2(r.qty - expiredQty),
       locations: r.locations.map((l) => ({ ...l, qty: Number(l.qty) })), lots: mine,
       location: r.locations[0]?.name ?? "—",
@@ -463,8 +465,8 @@ async function suppliers() {
 }
 
 async function setup() {
-  const [products, locations, ranches] = await Promise.all([
-    many(`SELECT p.sku, p.name, p.category, p.unit, p.price, p.cost_price, p.min_stock, p.active, p.shelf_life_days,
+  const [products, locations, ranches, profile] = await Promise.all([
+    many(`SELECT p.sku, p.name, p.category, p.unit, p.price, p.cost_price, p.min_stock, p.active, p.shelf_life_days, p.barcode, p.plu, p.vat_rate,
         COALESCE((SELECT sum(qty) FROM stock WHERE product_sku = p.sku), 0) AS qty,
         EXISTS (SELECT 1 FROM stock_movements WHERE product_sku = p.sku) AS used
       FROM products p ORDER BY p.active DESC, p.sort, p.name`),
@@ -472,10 +474,11 @@ async function setup() {
       FROM storage_locations l LEFT JOIN stock s ON s.location_id = l.id GROUP BY l.id ORDER BY l.active DESC, l.sort, l.name`),
     many(`SELECT r.id, r.name, r.active, count(a.*) FILTER (WHERE a.status NOT IN ('Processed','Sold'))::int AS animals
       FROM ranches r LEFT JOIN livestock a ON a.ranch_id = r.id GROUP BY r.id ORDER BY r.active DESC, r.name`),
+    businessProfile(),
   ]);
   return {
-    products: products.map((p) => ({ sku: p.sku, name: p.name, category: p.category, unit: p.unit, price: p.price, costPrice: p.cost_price, min: p.min_stock, active: p.active, qty: round2(p.qty), used: p.used, shelfLife: p.shelf_life_days })),
-    locations, ranches,
+    products: products.map((p) => ({ sku: p.sku, name: p.name, category: p.category, unit: p.unit, price: p.price, costPrice: p.cost_price, min: p.min_stock, active: p.active, qty: round2(p.qty), used: p.used, shelfLife: p.shelf_life_days, barcode: p.barcode ?? "", plu: p.plu ?? "", vatRate: Number(p.vat_rate) || 0 })),
+    locations, ranches, profile,
   };
 }
 
@@ -543,6 +546,7 @@ export async function buildState(user) {
   if (can(r, "counts.perform") || can(r, "counts.schedule")) jobs.counts = stockCounts(r);
   if (can(r, "till.use") || can(r, "till.review")) jobs.tills = tills(r, user.id);
   if (APPROVAL_PERMS.some((p) => can(r, p)) || can(r, "controls.manage")) jobs.limits = approvalLimits();
+  if (can(r, "pos.use")) jobs.pos = posState(user);
   if (can(r, "backups.manage")) jobs.backups = backupsState();
   if (can(r, "payments.reconcile")) jobs.payments = paymentsState(user.id);
   if (can(r, "purchasing.view")) jobs.purchases = purchasesState(r);

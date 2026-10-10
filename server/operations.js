@@ -15,7 +15,7 @@ const naira = (n) => `₦${Math.round(n).toLocaleString("en-NG")}`;
 const money = z.coerce.number().int().min(0).max(1e12);
 const lagosToday = () => new Date(Date.now() + 3600e3).toISOString().slice(0, 10);
 
-export const DEFAULT_LIMITS = { adjustment: 50000, refund: 50000, tillVariance: 5000, purchase: 500000, paymentVariance: 5000 };
+export const DEFAULT_LIMITS = { adjustment: 50000, refund: 50000, tillVariance: 5000, purchase: 500000, paymentVariance: 5000, discountPct: 10 };
 export async function approvalLimits(db = { query }) {
   const r = (await db.query("SELECT value FROM settings WHERE key = 'approval_limits'")).rows[0];
   return { ...DEFAULT_LIMITS, ...(r?.value || {}) };
@@ -27,17 +27,21 @@ export async function openTill(db, userId) {
 
 /** What should be in the drawer, and the session's takings by payment method. */
 export async function tillSummary(db, session) {
-  const [cash, methods, refunds, pending] = await Promise.all([
-    db.query("SELECT COALESCE(sum(total), 0) AS v FROM orders WHERE cash_session_id = $1 AND status <> 'Cancelled'", [session.id]),
-    db.query(`SELECT payment_method AS method, count(*)::int AS orders, COALESCE(sum(total), 0) AS amount FROM orders
-              WHERE till_session_id = $1 AND status <> 'Cancelled' AND payment_status = 'Paid' GROUP BY payment_method ORDER BY payment_method`, [session.id]),
+  const [cash, methods, refunds, pending, sales] = await Promise.all([
+    db.query(`SELECT COALESCE(sum(p.amount), 0) AS v FROM order_payments p JOIN orders o ON o.id = p.order_id
+              WHERE p.till_session_id = $1 AND p.method = 'Cash' AND o.status <> 'Cancelled'`, [session.id]),
+    db.query(`SELECT p.method, count(DISTINCT p.order_id)::int AS orders, COALESCE(sum(p.amount), 0) AS amount FROM order_payments p
+              JOIN orders o ON o.id = p.order_id WHERE p.till_session_id = $1 AND o.status <> 'Cancelled' GROUP BY p.method ORDER BY p.method`, [session.id]),
     db.query("SELECT COALESCE(sum(amount), 0) AS v FROM refunds WHERE till_session_id = $1 AND status = 'Approved' AND method = 'Cash'", [session.id]),
     db.query("SELECT count(*)::int AS n FROM refunds WHERE till_session_id = $1 AND status = 'Pending'", [session.id]),
+    db.query(`SELECT count(*)::int AS n, COALESCE(sum(gross_total), 0) AS gross, COALESCE(sum(discount_total), 0) AS discounts,
+                COALESCE(sum(total), 0) AS net, COALESCE(sum(tax_total), 0) AS tax, COALESCE(sum(change_given), 0) AS change
+              FROM orders WHERE till_session_id = $1 AND status <> 'Cancelled'`, [session.id]),
   ]);
   const cashIn = cash.rows[0].v, cashOut = refunds.rows[0].v;
   return {
     float: session.opening_float, cashIn, cashOut, expected: session.opening_float + cashIn - cashOut,
-    byMethod: methods.rows, pendingCashRefunds: pending.rows[0].n,
+    byMethod: methods.rows, pendingCashRefunds: pending.rows[0].n, sales: sales.rows[0],
   };
 }
 
@@ -226,11 +230,11 @@ export function operationRoutes(r) {
 
   /* ============================================================ approval limits */
   r.patch("/settings/limits", requirePerm("controls.manage"), ah(async (req, res) => {
-    const b = parse(z.object({ adjustment: money.optional(), refund: money.optional(), tillVariance: money.optional(), purchase: money.optional(), paymentVariance: money.optional() }), req.body);
+    const b = parse(z.object({ adjustment: money.optional(), refund: money.optional(), tillVariance: money.optional(), purchase: money.optional(), paymentVariance: money.optional(), discountPct: z.coerce.number().min(0).max(100).optional() }), req.body);
     const cur = await approvalLimits();
     const next = { ...cur, ...Object.fromEntries(Object.entries(b).filter(([, v]) => v !== undefined)) };
     await query("INSERT INTO settings (key, value) VALUES ('approval_limits', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", [JSON.stringify(next)]);
-    const ch = Object.keys(next).filter((k) => next[k] !== cur[k]).map((k) => `${k} ${naira(cur[k])} → ${naira(next[k])}`);
+    const ch = Object.keys(next).filter((k) => next[k] !== cur[k]).map((k) => k === "discountPct" ? `discount ${cur[k]}% → ${next[k]}%` : `${k} ${naira(cur[k])} → ${naira(next[k])}`);
     if (ch.length) await audit(null, req.user.id, "Changed approval limits", ch.join(", "));
     res.json(next);
   }));

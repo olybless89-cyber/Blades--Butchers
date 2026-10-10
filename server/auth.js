@@ -20,6 +20,13 @@ if (!SECRET || SECRET.length < 32) {
 }
 
 export const hashPassword = (pw) => bcrypt.hash(pw, 12);
+/** Short-lived signed tokens for one purpose (e.g. a manager's override at the till). Never accepted as a session. */
+export const signPurpose = (claims, ttl) => jwt.sign(claims, SECRET, { expiresIn: ttl });
+export function verifyPurpose(token, purpose) {
+  const c = jwt.verify(token, SECRET);
+  if (c.purpose !== purpose) throw new Error("wrong token");
+  return c;
+}
 
 /** Every role an account holds: the primary role first, then any additional ones. */
 export const rolesOf = (u) => [u.role, ...(u.extra_roles || []).filter((r) => r !== u.role)];
@@ -28,7 +35,7 @@ const mfaRequired = (u) => rolesOf(u).some((r) => MFA_REQUIRED_ROLES.includes(r)
 export const publicUser = (u) => ({
   id: u.id, name: u.name, email: u.email, role: u.role, roles: rolesOf(u), extraRoles: u.extra_roles || [],
   active: u.active, mustChangePassword: !!u.must_change_password,
-  mfaEnabled: !!u.totp_enabled, mfaSetupRequired: mfaRequired(u) && !u.totp_enabled,
+  mfaEnabled: !!u.totp_enabled, mfaSetupRequired: mfaRequired(u) && !u.totp_enabled, posPinSet: !!u.pos_pin_hash,
 });
 
 export const passwordRule = z.string().min(PASSWORD_MIN, `must be at least ${PASSWORD_MIN} characters`).max(200);

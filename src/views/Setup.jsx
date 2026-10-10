@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Plus, Pencil, Check, Archive, RotateCcw, Snowflake, Beef, Package, Lock, ShoppingCart, ShieldCheck } from "lucide-react";
+import { Plus, Pencil, Check, Archive, RotateCcw, Snowflake, Beef, Package, Lock, ShoppingCart, ShieldCheck, Receipt } from "lucide-react";
 import { C, nairaFmt, qtyFmt } from "../lib/theme.js";
 import { PROCESSING_SKUS } from "../shared/permissions.js";
 import { SectionHeader, Btn, StatusPill, Modal, Field, Input, Select, Card, Table, Empty, useBusy } from "../components/ui.jsx";
@@ -10,7 +10,7 @@ export function SetupView({ data, actions, permit }) {
   const canProducts = permit("products.edit");
   const showCost = permit("costs.view");
   const [tab, setTab] = useState("products");
-  const tabs = [...TABS, ...(permit("controls.manage") ? [["controls", "Controls", ShieldCheck]] : [])];
+  const tabs = [...TABS, ["receipt", "Receipt & Till", Receipt], ...(permit("controls.manage") ? [["controls", "Controls", ShieldCheck]] : [])];
   useEffect(() => { try { localStorage.setItem("bladeos.setupVisited", "1"); } catch {} }, []);
   const [showRetired, setShowRetired] = useState(false);
   const [modal, setModal] = useState(null); // { kind, item? }
@@ -31,7 +31,7 @@ export function SetupView({ data, actions, permit }) {
       {modal?.kind === "product" && <ProductForm item={modal.item} categories={categories} onClose={() => setModal(null)} actions={actions} />}
       {modal?.kind === "place" && <PlaceForm tab={tab} item={modal.item} onClose={() => setModal(null)} actions={actions} />}
 
-      <SectionHeader eyebrow="System" title="Business Setup" action={tab !== "controls" && 
+      <SectionHeader eyebrow="System" title="Business Setup" action={tab !== "controls" && tab !== "receipt" &&
         (tab !== "products" || canProducts) && <Btn icon={Plus} small onClick={() => setModal({ kind: tab === "products" ? "product" : "place" })}>
           Add {tab === "products" ? "Product" : tab === "locations" ? "Location" : "Ranch"}
         </Btn>
@@ -93,6 +93,7 @@ export function SetupView({ data, actions, permit }) {
       )}
 
       {tab === "controls" && <ControlsPanel limits={data.limits} actions={actions} />}
+      {tab === "receipt" && <ReceiptPanel profile={data.setup?.profile || {}} actions={actions} />}
 
       {(tab === "locations" || tab === "ranches") && (
         <Card pad={false}>
@@ -141,19 +142,23 @@ function ProductForm({ item, categories, onClose, actions }) {
   const [f, setF] = useState({
     name: item?.name ?? "", sku: item?.sku ?? "", category: item?.category ?? "", unit: item?.unit ?? "KG",
     price: String(item?.price ?? ""), costPrice: String(item?.costPrice ?? ""), min: String(item?.min ?? "0"), shelfLife: String(item?.shelfLife ?? 5),
+    barcode: item?.barcode ?? "", plu: String(item?.plu ?? ""), vatRate: String(item?.vatRate ?? 0),
   });
   const [busy, run] = useBusy();
   const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
   const autoSku = f.name.toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24);
   const int = (v) => v !== "" && Number.isInteger(Number(v)) && Number(v) >= 0;
   const valid = f.name.trim().length >= 2 && f.category.trim().length >= 2 && int(f.price) && int(f.costPrice) && f.min !== "" && Number(f.min) >= 0
-    && (!f.sku || /^[A-Za-z0-9][A-Za-z0-9-]{1,23}$/.test(f.sku)) && int(f.shelfLife) && Number(f.shelfLife) >= 1 && Number(f.shelfLife) <= 730;
+    && (!f.sku || /^[A-Za-z0-9][A-Za-z0-9-]{1,23}$/.test(f.sku)) && int(f.shelfLife) && Number(f.shelfLife) >= 1 && Number(f.shelfLife) <= 730
+    && (!f.barcode || /^\d{8,14}$/.test(f.barcode.trim())) && (f.plu === "" || (int(f.plu) && Number(f.plu) >= 1 && Number(f.plu) <= 99999))
+    && f.vatRate !== "" && Number(f.vatRate) >= 0 && Number(f.vatRate) <= 100;
   const margin = Number(f.price) > 0 ? Math.round(((Number(f.price) - Number(f.costPrice)) / Number(f.price)) * 100) : 0;
 
   const submit = (e) => {
     e.preventDefault();
     run(async () => {
-      const body = { name: f.name.trim(), category: f.category.trim(), unit: f.unit, price: Number(f.price), costPrice: Number(f.costPrice), min: Number(f.min), shelfLife: Number(f.shelfLife) };
+      const body = { name: f.name.trim(), category: f.category.trim(), unit: f.unit, price: Number(f.price), costPrice: Number(f.costPrice), min: Number(f.min), shelfLife: Number(f.shelfLife),
+        barcode: f.barcode.trim(), plu: f.plu === "" ? "" : Number(f.plu), vatRate: Number(f.vatRate) };
       const r = isNew
         ? await actions.addProduct({ ...body, ...(f.sku ? { sku: f.sku.toUpperCase() } : {}) })
         : await actions.updateProduct(item.sku, Object.fromEntries(Object.entries(body).filter(([k, v]) => v !== (k === "costPrice" ? item.costPrice : item[k]))), `${body.name} saved`);
@@ -182,6 +187,11 @@ function ProductForm({ item, categories, onClose, actions }) {
           <Field label="Shelf life (days)" hint="Default use-by for new stock"><Input mono type="number" min="1" max="730" step="1" value={f.shelfLife} onChange={set("shelfLife")} /></Field>
           <Field label={`Selling price (₦/${f.unit})`}><Input mono type="number" min="0" step="1" value={f.price} onChange={set("price")} required /></Field>
           <Field label={`Cost price (₦/${f.unit})`}><Input mono type="number" min="0" step="1" value={f.costPrice} onChange={set("costPrice")} required /></Field>
+          <Field label="Barcode (EAN / UPC)" hint="Scan it into this box" error={f.barcode && !/^\d{8,14}$/.test(f.barcode.trim()) ? "8–14 digits" : null}>
+            <Input mono value={f.barcode} onChange={set("barcode")} maxLength={14} inputMode="numeric" placeholder="optional" />
+          </Field>
+          <Field label="PLU" hint="Number on scale labels and the till keypad"><Input mono type="number" min="1" max="99999" step="1" value={f.plu} onChange={set("plu")} placeholder={isNew ? "auto" : ""} /></Field>
+          <Field label="VAT (%)" hint="0 for exempt basic food; price includes VAT"><Input mono type="number" min="0" max="100" step="0.5" value={f.vatRate} onChange={set("vatRate")} /></Field>
         </div>
         <div className="f-body text-xs" style={{ color: C.muted }}>
           Gross margin: <span className="f-mono font-semibold" style={{ color: margin > 0 ? C.ok : C.danger }}>{margin}%</span>
@@ -264,3 +274,28 @@ function ControlsPanel({ limits = {}, actions }) {
   );
 }
 
+/** Receipt header (name, address, TIN) and how scale labels are read. */
+function ReceiptPanel({ profile, actions }) {
+  const [f, setF] = useState({ name: "", tagline: "", address: "", phone: "", email: "", tin: "", receiptFooter: "", scaleLabel: "weight", ...profile });
+  const [busy, run] = useBusy();
+  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
+  return (
+    <Card>
+      <h3 className="f-display text-base mb-1" style={{ color: C.ink }}>Receipt & till</h3>
+      <p className="f-body text-xs mb-4" style={{ color: C.muted }}>Printed at the top and bottom of every receipt. Add your TIN once registered for VAT.</p>
+      <form onSubmit={(e) => { e.preventDefault(); run(() => actions.saveBusiness(f)); }} className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-2xl">
+        <Field label="Business name"><Input value={f.name} onChange={set("name")} maxLength={80} required /></Field>
+        <Field label="Tagline"><Input value={f.tagline} onChange={set("tagline")} maxLength={80} /></Field>
+        <div className="sm:col-span-2"><Field label="Address"><Input value={f.address} onChange={set("address")} maxLength={160} placeholder="Shop address" /></Field></div>
+        <Field label="Phone"><Input value={f.phone} onChange={set("phone")} maxLength={40} /></Field>
+        <Field label="Email"><Input value={f.email} onChange={set("email")} maxLength={80} /></Field>
+        <Field label="TIN / VAT number"><Input mono value={f.tin} onChange={set("tin")} maxLength={30} /></Field>
+        <Field label="Scale labels carry" hint="Barcodes starting with 2 printed by a label scale">
+          <Select value={f.scaleLabel} onChange={set("scaleLabel")}><option value="weight">Weight (grams)</option><option value="price">Price (naira)</option></Select>
+        </Field>
+        <div className="sm:col-span-2"><Field label="Receipt footer"><Input value={f.receiptFooter} onChange={set("receiptFooter")} maxLength={200} /></Field></div>
+        <div><Btn type="submit" icon={Check} busy={busy} disabled={f.name.trim().length < 2}>Save</Btn></div>
+      </form>
+    </Card>
+  );
+}
