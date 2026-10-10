@@ -2,6 +2,7 @@ import { query } from "./db.js";
 import { can, ROLES, APPROVAL_PERMS, EXPIRY_WARN_DAYS } from "../src/shared/permissions.js";
 import { approvalLimits, tillSummary } from "./operations.js";
 import { fmtDate, fmtShort, fmtDateTime, round2 } from "./util.js";
+import { backupsState, paymentsState, purchasesState, foodSafetyState, businessNotifications } from "./business.js";
 
 // SQL snippets — every "day" and "month" is measured in Lagos time.
 const TODAY = `(now() AT TIME ZONE 'Africa/Lagos')::date`;
@@ -287,6 +288,10 @@ async function reports() {
     one(`SELECT COALESCE(sum(leads), 0)::int AS leads, COALESCE(sum(budget), 0) AS spend, COALESCE(sum(revenue), 0) AS revenue,
            COALESCE(sum(orders), 0)::int AS orders FROM campaigns`),
   ]);
+  // Share of weighed (KG) lines at the counter that came straight off the scale rather than typed in.
+  const scale = await one(`SELECT count(*)::int AS lines, count(*) FILTER (WHERE oi.scale_weighed)::int AS weighed
+    FROM order_items oi JOIN orders o ON o.id = oi.order_id JOIN products p ON p.sku = oi.product_sku
+    WHERE p.unit = 'KG' AND o.channel = 'POS' AND o.status <> 'Cancelled' AND ${IN_MONTH("o.created_at")}`);
   return {
     sales: [
       { label: "Revenue (MTD)", value: naira(sales.revenue), icon: "DollarSign" },
@@ -294,6 +299,7 @@ async function reports() {
       { label: "Average Order", value: naira(sales.orders ? sales.revenue / sales.orders : 0), icon: "Activity" },
       { label: "Best Seller", value: best?.name ?? "—", icon: "TrendingUp" },
       { label: "Refunds (MTD)", value: naira(sales.refunds), icon: "AlertTriangle" },
+      { label: "KG Sales Weighed on Scale", value: scale.lines ? `${Math.round((scale.weighed / scale.lines) * 100)}%` : "—", sub: scale.lines ? `${scale.weighed} of ${scale.lines} counter lines` : undefined, icon: "Activity" },
     ],
     inventory: [
       { label: "Opening Stock (KG)", value: round2(closing.kg - invMoves.net).toLocaleString("en-NG"), icon: "Boxes" },
@@ -513,7 +519,7 @@ async function approvals(roles, userId) {
 export async function buildState(user) {
   const r = user.roles;
   const s = { user: { id: user.id, name: user.name, email: user.email, role: user.role, roles: user.roles } };
-  const jobs = { meta: meta(), notifications: notifications(user) };
+  const jobs = { meta: meta(), notifications: Promise.all([notifications(user), businessNotifications(user)]).then(([a, b]) => [...b.filter((n) => n.tone === "danger"), ...a, ...b.filter((n) => n.tone !== "danger")]) };
 
   if (can(r, "dashboard.view")) jobs.dashboard = dashboard();
   if (can(r, "inventory.view") || can(r, "pos.use")) jobs.inventory = inventory();
@@ -537,6 +543,10 @@ export async function buildState(user) {
   if (can(r, "counts.perform") || can(r, "counts.schedule")) jobs.counts = stockCounts(r);
   if (can(r, "till.use") || can(r, "till.review")) jobs.tills = tills(r, user.id);
   if (APPROVAL_PERMS.some((p) => can(r, p)) || can(r, "controls.manage")) jobs.limits = approvalLimits();
+  if (can(r, "backups.manage")) jobs.backups = backupsState();
+  if (can(r, "payments.reconcile")) jobs.payments = paymentsState(user.id);
+  if (can(r, "purchasing.view")) jobs.purchases = purchasesState(r);
+  if (can(r, "haccp.complete") || can(r, "haccp.verify")) jobs.foodSafety = foodSafetyState();
   if (can(r, "audit.view")) jobs.audit = many(`SELECT a.action, a.detail, a.created_at, u.name FROM audit_log a LEFT JOIN users u ON u.id = a.user_id
     ORDER BY a.created_at DESC, a.id DESC LIMIT 60`).then((rows) => rows.map((x) => ({ who: x.name ?? "System", action: x.action, detail: x.detail, at: fmtDateTime(x.created_at) })));
   if (can(r, "users.manage")) jobs.users = many(`SELECT id, name, email, role, extra_roles, active, must_change_password, totp_enabled, last_login_at FROM users ORDER BY active DESC, name`)

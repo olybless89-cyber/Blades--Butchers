@@ -3,6 +3,7 @@ import { Plus, X, Download, Phone, MapPin, Search, UserPlus, Check, ArrowRight, 
 import { C, nairaFmt, qtyFmt, initials, exportCsv } from "../lib/theme.js";
 import { ORDER_FLOW, REFUND_REASONS, RESTOCK_REASON } from "../shared/permissions.js";
 import { SectionHeader, Btn, StatusPill, Modal, Field, Input, Select, Card, Table, Empty, useBusy } from "../components/ui.jsx";
+import { ScaleReader } from "../lib/scale.jsx";
 
 const AREAS = ["Wuse II", "Garki", "Maitama", "Gwarinpa", "Jabi", "Asokoro", "Life Camp", "Utako", "Kubwa", "Lokogoma"];
 
@@ -12,7 +13,10 @@ export function POSView({ data, actions, permit }) {
   const customers = data.customers || [];
   const [cat, setCat] = useState("All");
   const [selected, setSelected] = useState(null);
-  const [qty, setQty] = useState("");
+  const [qty, setQtyRaw] = useState("");
+  const [fromScale, setFromScale] = useState(false); // quantity came straight off the scale
+  const setQty = (v) => { setQtyRaw(v); setFromScale(false); };
+  const [paymentRef, setPaymentRef] = useState("");
   const [cart, setCart] = useState([]);
   const [customerId, setCustomerId] = useState("");
   const [fulfilment, setFulfilment] = useState("Walk-in");
@@ -46,8 +50,9 @@ export function POSView({ data, actions, permit }) {
     if (qtyError || !(q > 0)) return;
     setCart((prev) => {
       const i = prev.findIndex((c) => c.sku === live.sku);
-      if (i >= 0) { const n = [...prev]; n[i] = { ...n[i], qty: Math.round((n[i].qty + q) * 1000) / 1000 }; return n; }
-      return [...prev, { sku: live.sku, name: live.name, unit: live.unit, price: live.price, qty: q }];
+      const weighed = live.unit === "KG" && fromScale;
+      if (i >= 0) { const n = [...prev]; n[i] = { ...n[i], qty: Math.round((n[i].qty + q) * 1000) / 1000, scale: n[i].scale && weighed }; return n; }
+      return [...prev, { sku: live.sku, name: live.name, unit: live.unit, price: live.price, qty: q, scale: weighed }];
     });
     setSelected(null); setQty("");
   };
@@ -56,14 +61,15 @@ export function POSView({ data, actions, permit }) {
   const checkout = () => run(async () => {
     const body = {
       customerId: customer ? customer.id : null,
-      items: cart.map((c) => ({ sku: c.sku, qty: c.qty })),
+      items: cart.map((c) => ({ sku: c.sku, qty: c.qty, scale: !!c.scale })),
       fulfilment, paymentMethod, paymentStatus,
+      ...(paymentStatus === "Paid" && paymentMethod !== "Cash" && paymentRef.trim() ? { paymentRef: paymentRef.trim() } : {}),
       ...(fulfilment === "Delivery" ? { area: area.trim() } : {}),
     };
     const r = await actions.sell(body);
     if (r) {
       setReceipt({ code: r.code, total: r.total, customer: customer?.name ?? "Walk-in Customer", items: cart, paymentMethod, paymentStatus, fulfilment, area, at: new Date() });
-      setCart([]); setCustomerId(""); setFulfilment("Walk-in"); setArea(""); setPaymentStatus("Paid"); setPaymentMethod("Cash");
+      setCart([]); setCustomerId(""); setFulfilment("Walk-in"); setArea(""); setPaymentStatus("Paid"); setPaymentMethod("Cash"); setPaymentRef("");
     }
   });
 
@@ -105,7 +111,8 @@ export function POSView({ data, actions, permit }) {
                   <div className="f-body text-[10px] uppercase tracking-wide mb-1 truncate" style={{ color: C.muted }}>{live.name} — {live.unit === "KG" ? "Weight (KG)" : `Quantity (${live.unit})`}</div>
                   <input autoFocus type="number" step={live.unit === "KG" ? "0.001" : "1"} min="0" value={qty} onChange={(e) => setQty(e.target.value)} placeholder={live.unit === "KG" ? "2.750" : "1"}
                     className="f-mono text-xl sm:text-2xl font-semibold w-full rounded-lg px-3 py-2 border outline-none focus:ring-2" style={{ borderColor: qtyError ? C.danger : C.input }} />
-                  <div className="f-body text-xs mt-1.5" style={{ color: qtyError ? C.danger : C.muted }}>{qtyError || `${available} ${live.unit} available`}</div>
+                  <div className="f-body text-xs mt-1.5" style={{ color: qtyError ? C.danger : C.muted }}>{qtyError || `${available} ${live.unit} available`}{fromScale && !qtyError ? " · from scale" : ""}</div>
+                  {live.unit === "KG" && <ScaleReader max={available} onWeight={(kg) => { setQtyRaw(String(kg)); setFromScale(true); }} />}
                 </div>
                 <div className="flex items-end sm:items-start justify-between sm:block gap-3">
                   <div className="text-left sm:text-right">
@@ -136,7 +143,7 @@ export function POSView({ data, actions, permit }) {
               <div key={c.sku} className="flex items-center justify-between rounded-lg px-3 py-2.5 gap-2" style={{ background: C.cream }}>
                 <div className="min-w-0">
                   <div className="f-body text-sm font-medium truncate" style={{ color: C.ink }}>{c.name}</div>
-                  <div className="f-mono text-xs" style={{ color: C.muted }}>{c.qty} {c.unit} × {nairaFmt(c.price)}</div>
+                  <div className="f-mono text-xs" style={{ color: C.muted }}>{c.qty} {c.unit} × {nairaFmt(c.price)}{c.scale ? " · weighed" : ""}</div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="f-mono text-sm font-semibold" style={{ color: C.ink }}>{nairaFmt(c.qty * c.price)}</span>
@@ -162,6 +169,10 @@ export function POSView({ data, actions, permit }) {
               <Select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}><option>Cash</option><option>Transfer</option><option>POS Card</option></Select>
               <Select value={paymentStatus} onChange={(e) => setPaymentStatus(e.target.value)}><option>Paid</option><option value="Pending">Pay later</option></Select>
             </div>
+            {paymentStatus === "Paid" && paymentMethod !== "Cash" && (
+              <Input value={paymentRef} onChange={(e) => setPaymentRef(e.target.value)} maxLength={60} aria-label="Payment reference"
+                placeholder={paymentMethod === "Transfer" ? "Sender name / bank (helps the daily bank check)" : "Terminal slip number"} />
+            )}
             <div className="flex justify-between pt-1">
               <span className="f-body text-sm font-semibold" style={{ color: C.ink }}>Total</span>
               <span className="f-mono text-xl font-bold" style={{ color: C.burgundy }}>{nairaFmt(cartTotal)}</span>
@@ -289,6 +300,7 @@ function OrderModal({ code, actions, permit, onClose }) {
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [refunding, setRefunding] = useState(false);
   const [payWith, setPayWith] = useState("Cash");
+  const [payRef, setPayRef] = useState("");
   const [busy, run] = useBusy();
   const load = () => actions.getOrder(code).then(setO).catch((e) => setError(e.message));
   useEffect(() => { load(); }, [code]);
@@ -309,7 +321,7 @@ function OrderModal({ code, actions, permit, onClose }) {
         <>
           <div className="flex flex-wrap items-center gap-2 mb-4">
             <StatusPill status={o.status} /><StatusPill status={o.payment} />
-            <span className="f-body text-xs" style={{ color: C.muted }}>{o.channel}{o.paymentMethod ? ` · ${o.paymentMethod}` : ""}{o.staff ? ` · by ${o.staff}` : ""}</span>
+            <span className="f-body text-xs" style={{ color: C.muted }}>{o.channel}{o.paymentMethod ? ` · ${o.paymentMethod}` : ""}{o.paymentRef ? ` (${o.paymentRef})` : ""}{o.staff ? ` · by ${o.staff}` : ""}</span>
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-5">
             <Info label="Customer" value={o.customer} />
@@ -363,7 +375,8 @@ function OrderModal({ code, actions, permit, onClose }) {
               {o.payment === "Pending" && (
                 <span className="inline-flex gap-1 items-center">
                   <Select value={payWith} onChange={(e) => setPayWith(e.target.value)}><option>Cash</option><option>Transfer</option><option>POS Card</option></Select>
-                  <Btn variant="gold" icon={Check} busy={busy} onClick={() => update({ paymentStatus: "Paid", paymentMethod: payWith })}>Mark Paid</Btn>
+                  {payWith !== "Cash" && <Input value={payRef} onChange={(e) => setPayRef(e.target.value)} maxLength={60} placeholder={payWith === "Transfer" ? "Sender / bank" : "Slip no."} aria-label="Payment reference" />}
+                  <Btn variant="gold" icon={Check} busy={busy} onClick={() => update({ paymentStatus: "Paid", paymentMethod: payWith, ...(payWith !== "Cash" && payRef.trim() ? { paymentRef: payRef.trim() } : {}) })}>Mark Paid</Btn>
                 </span>
               )}
               {o.status !== "Delivered" && (!confirmCancel

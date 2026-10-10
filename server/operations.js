@@ -15,7 +15,7 @@ const naira = (n) => `₦${Math.round(n).toLocaleString("en-NG")}`;
 const money = z.coerce.number().int().min(0).max(1e12);
 const lagosToday = () => new Date(Date.now() + 3600e3).toISOString().slice(0, 10);
 
-export const DEFAULT_LIMITS = { adjustment: 50000, refund: 50000, tillVariance: 5000 };
+export const DEFAULT_LIMITS = { adjustment: 50000, refund: 50000, tillVariance: 5000, purchase: 500000, paymentVariance: 5000 };
 export async function approvalLimits(db = { query }) {
   const r = (await db.query("SELECT value FROM settings WHERE key = 'approval_limits'")).rows[0];
   return { ...DEFAULT_LIMITS, ...(r?.value || {}) };
@@ -226,7 +226,7 @@ export function operationRoutes(r) {
 
   /* ============================================================ approval limits */
   r.patch("/settings/limits", requirePerm("controls.manage"), ah(async (req, res) => {
-    const b = parse(z.object({ adjustment: money.optional(), refund: money.optional(), tillVariance: money.optional() }), req.body);
+    const b = parse(z.object({ adjustment: money.optional(), refund: money.optional(), tillVariance: money.optional(), purchase: money.optional(), paymentVariance: money.optional() }), req.body);
     const cur = await approvalLimits();
     const next = { ...cur, ...Object.fromEntries(Object.entries(b).filter(([, v]) => v !== undefined)) };
     await query("INSERT INTO settings (key, value) VALUES ('approval_limits', $1) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", [JSON.stringify(next)]);

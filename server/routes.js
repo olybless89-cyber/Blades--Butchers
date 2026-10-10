@@ -6,8 +6,9 @@ import { controlRoutes, requestAdjustment } from "./controls.js";
 import { buildState } from "./state.js";
 import { addStock, allocateStock, transferStock, returnAllocations } from "./stock.js";
 import { openTill, operationRoutes } from "./operations.js";
+import { businessRoutes } from "./business.js";
 import { ROLES, LEADERSHIP_ROLES, COMBINABLE_ROLES, ORDER_FLOW, can, PROCESSING_SKUS, CONTENT_STATUSES } from "../src/shared/permissions.js";
-import { ah, parse, audit, bad, notFound, conflict, HttpError, round2, round3 } from "./util.js";
+import { ah, parse, audit, bad, notFound, conflict, HttpError, round2, round3, fmtDateTime } from "./util.js";
 
 const money = z.coerce.number().int().min(0).max(1e12);
 const qtyNum = z.coerce.number().positive().max(1e6);
@@ -203,11 +204,12 @@ export function apiRouter() {
   r.post("/sales", requirePerm("pos.use"), ah(async (req, res) => {
     const b = parse(z.object({
       customerId: id.nullable().optional(),
-      items: z.array(z.object({ sku: z.string().min(1), qty: qtyNum })).min(1).max(50),
+      items: z.array(z.object({ sku: z.string().min(1), qty: qtyNum, scale: z.boolean().optional() })).min(1).max(50),
       fulfilment: z.enum(["Walk-in", "Delivery"]).default("Walk-in"),
       area: z.string().trim().max(60).optional(),
       paymentStatus: z.enum(["Paid", "Pending"]).default("Paid"),
       paymentMethod: z.enum(["Cash", "Transfer", "POS Card"]).default("Cash"),
+      paymentRef: z.string().trim().max(60).optional().or(z.literal("")),   // transfer sender / terminal slip number
     }), req.body);
     if (b.fulfilment === "Delivery" && !b.area) throw bad("Delivery orders need an area.");
     const out = await tx(async (db) => {
@@ -238,21 +240,22 @@ export function apiRouter() {
         const allocations = await allocateStock(db, { sku: p.sku, qty, kind: "sale", reference: code, userId: req.user.id });
         const subtotal = Math.round(qty * p.price);
         total += subtotal;
-        lines.push({ sku: p.sku, qty, unitPrice: p.price, subtotal, allocations });
+        lines.push({ sku: p.sku, qty, unitPrice: p.price, subtotal, allocations, scale: p.unit === "KG" && it.scale === true });
       }
 
       const isDelivery = b.fulfilment === "Delivery";
       const { rows } = await db.query(
-        `INSERT INTO orders (code, customer_id, channel, status, payment_status, payment_method, total, area, user_id, till_session_id, cash_session_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+        `INSERT INTO orders (code, customer_id, channel, status, payment_status, payment_method, total, area, user_id, till_session_id, cash_session_id, paid_at, payment_ref)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, CASE WHEN $5 = 'Paid' THEN now() END, $12) RETURNING id`,
         [code, customer?.id ?? null, isDelivery ? "Delivery" : "POS", isDelivery ? "Confirmed" : "Delivered",
          b.paymentStatus, b.paymentMethod, total, isDelivery ? b.area : "Walk-in", req.user.id, till.id,
-         b.paymentStatus === "Paid" && b.paymentMethod === "Cash" ? till.id : null]
+         b.paymentStatus === "Paid" && b.paymentMethod === "Cash" ? till.id : null,
+         b.paymentStatus === "Paid" && b.paymentMethod !== "Cash" ? b.paymentRef || null : null]
       );
       for (const l of lines) {
         await db.query(
-          "INSERT INTO order_items (order_id, product_sku, qty, unit_price, subtotal, allocations) VALUES ($1,$2,$3,$4,$5,$6)",
-          [rows[0].id, l.sku, l.qty, l.unitPrice, l.subtotal, JSON.stringify(l.allocations)]
+          "INSERT INTO order_items (order_id, product_sku, qty, unit_price, subtotal, allocations, scale_weighed) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+          [rows[0].id, l.sku, l.qty, l.unitPrice, l.subtotal, JSON.stringify(l.allocations), l.scale]
         );
       }
       await audit(db, req.user.id, `Sale ${code}`, `₦${total.toLocaleString("en-NG")} · ${customer?.name ?? "Walk-in"} · ${b.paymentStatus}`);
@@ -267,9 +270,11 @@ export function apiRouter() {
       status: z.enum([...ORDER_FLOW, "Cancelled"]).optional(),
       paymentStatus: z.enum(["Paid", "Pending"]).optional(),
       paymentMethod: z.enum(["Cash", "Transfer", "POS Card"]).optional(),
+      paymentRef: z.string().trim().max(60).optional().or(z.literal("")),
     }), req.body);
     const out = await tx(async (db) => {
       const o = (await db.query("SELECT * FROM orders WHERE code = $1 FOR UPDATE", [req.params.code])).rows[0];
+      if (!o) throw notFound("Order not found.");
       let cashSession = o.cash_session_id, method = o.payment_method;
       if (b.paymentStatus === "Paid" && o.payment_status !== "Paid") {
         method = b.paymentMethod ?? o.payment_method ?? "Cash";
@@ -281,7 +286,7 @@ export function apiRouter() {
         }
       }
       if (b.paymentStatus === "Pending" && o.payment_status === "Paid") throw conflict("A paid order can't be set back to unpaid — use a refund.");
-      if (!o) throw notFound("Order not found.");
+      const nowPaid = b.paymentStatus === "Paid" && o.payment_status !== "Paid";
       if (o.status === "Cancelled") throw conflict("This order was cancelled.");
       const changes = [];
       if (b.status && b.status !== o.status) {
@@ -302,8 +307,10 @@ export function apiRouter() {
       }
       if (b.paymentStatus && b.paymentStatus !== o.payment_status) changes.push(`payment ${o.payment_status} → ${b.paymentStatus}${b.paymentStatus === "Paid" ? ` (${method})` : ""}`);
       if (!changes.length) return { ok: true };
-      await db.query("UPDATE orders SET status = $2, payment_status = $3, payment_method = $4, cash_session_id = $5, updated_at = now() WHERE id = $1",
-        [o.id, b.status ?? o.status, b.paymentStatus ?? o.payment_status, method, cashSession]);
+      // paid_at = the day the money arrived — that's the day the bank / terminal statement shows it.
+      await db.query(`UPDATE orders SET status = $2, payment_status = $3, payment_method = $4, cash_session_id = $5, updated_at = now(),
+                        paid_at = CASE WHEN $6 THEN now() ELSE paid_at END, payment_ref = CASE WHEN $6 THEN $7 ELSE payment_ref END WHERE id = $1`,
+        [o.id, b.status ?? o.status, b.paymentStatus ?? o.payment_status, method, cashSession, nowPaid, nowPaid && method !== "Cash" ? b.paymentRef || null : null]);
       await audit(db, req.user.id, `Updated ${o.code}`, changes.join(", "));
       return { ok: true };
     });
@@ -328,7 +335,7 @@ export function apiRouter() {
     const refundable = o.status === "Delivered" && o.payment_status === "Paid";
     res.json({
       code: o.code, customer: o.customer_name ?? "Walk-in Customer", phone: o.customer_phone, staff: o.staff_name,
-      channel: o.channel, status: o.status, payment: o.payment_status, paymentMethod: o.payment_method,
+      channel: o.channel, status: o.status, payment: o.payment_status, paymentMethod: o.payment_method, paymentRef: o.payment_ref, paidAt: o.paid_at ? fmtDateTime(o.paid_at) : null,
       total: o.total, refunded: o.refunded, netTotal: o.net_total, area: o.area, createdAt: o.created_at, refundable,
       items: items.rows.map((i) => ({
         id: i.id, name: i.name, unit: i.unit, qty: i.qty, price: i.unit_price, subtotal: i.subtotal, refundedQty: i.refunded_qty,
@@ -531,6 +538,7 @@ export function apiRouter() {
       reference: z.string().trim().max(60).optional().or(z.literal("")),
       note: z.string().trim().max(200).optional().or(z.literal("")),
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      poCode: z.string().trim().max(20).optional().or(z.literal("")),   // invoice against a purchase order (3-way match)
     }), req.body);
     if (!can(req.user.roles, b.kind === "payment" ? "payables.pay" : "procurement.edit")) {
       throw new HttpError(403, b.kind === "payment" ? "Only an Owner, MD or Administrator can record supplier payments." : "Your role can't record supplier invoices.");
@@ -544,12 +552,19 @@ export function apiRouter() {
         const bal = (await db.query("SELECT COALESCE(sum(CASE WHEN kind='invoice' THEN amount ELSE -amount END), 0) AS b FROM supplier_entries WHERE supplier_id = $1", [s.id])).rows[0].b;
         if (b.amount > bal) throw conflict(`That's more than the ₦${bal.toLocaleString("en-NG")} owed to ${s.name}.`);
       }
+      let po = null;
+      if (b.poCode && b.kind === "invoice") {
+        po = (await db.query("SELECT id, code, supplier_id, status FROM purchase_orders WHERE upper(code) = upper($1)", [b.poCode])).rows[0];
+        if (!po) throw bad(`No purchase order ${b.poCode}.`);
+        if (po.supplier_id !== s.id) throw bad(`${po.code} is for a different supplier.`);
+        if (["Pending Approval", "Rejected", "Cancelled"].includes(po.status)) throw conflict(`${po.code} is ${po.status.toLowerCase()} — nothing can be invoiced against it.`);
+      }
       await db.query(
-        `INSERT INTO supplier_entries (supplier_id, kind, amount, reference, note, entry_date, user_id)
-         VALUES ($1,$2,$3,$4,$5,COALESCE($6::date, (now() AT TIME ZONE 'Africa/Lagos')::date),$7)`,
-        [s.id, b.kind, b.amount, b.reference || null, b.note || null, b.date ?? null, req.user.id]
+        `INSERT INTO supplier_entries (supplier_id, kind, amount, reference, note, entry_date, user_id, purchase_order_id)
+         VALUES ($1,$2,$3,$4,$5,COALESCE($6::date, (now() AT TIME ZONE 'Africa/Lagos')::date),$7,$8)`,
+        [s.id, b.kind, b.amount, b.reference || null, b.note || null, b.date ?? null, req.user.id, po?.id ?? null]
       );
-      await audit(db, req.user.id, `${b.kind === "invoice" ? "Recorded invoice from" : "Paid"} ${s.name}`, `₦${b.amount.toLocaleString("en-NG")}${b.reference ? ` · ${b.reference}` : ""}`);
+      await audit(db, req.user.id, `${b.kind === "invoice" ? "Recorded invoice from" : "Paid"} ${s.name}`, `₦${b.amount.toLocaleString("en-NG")}${b.reference ? ` · ${b.reference}` : ""}${po ? ` · ${po.code}` : ""}`);
       return { ok: true, name: s.name };
     });
     res.status(201).json(out);
@@ -682,6 +697,7 @@ export function apiRouter() {
 
   controlRoutes(r);
   operationRoutes(r);
+  businessRoutes(r);
 
   r.use((req, _res, next) => next(new HttpError(404, "Unknown API endpoint.")));
   return r;

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   LayoutDashboard, Beef, Scissors, Warehouse, ShoppingCart, Users, Truck, Package, Megaphone, FileBarChart,
-  Search, Bell, X, LogIn, Sparkles, ShieldCheck, Settings, ClipboardList, ClipboardCheck, Menu, LogOut, KeyRound, Loader2, RefreshCw,
+  Search, Bell, X, LogIn, Sparkles, ShieldCheck, Settings, ClipboardList, ClipboardCheck, Menu, LogOut, KeyRound, Loader2, RefreshCw, FileText, Landmark, ListChecks,
 } from "lucide-react";
 import { api, setUnauthorizedHandler } from "./lib/api.js";
 import { C, initials } from "./lib/theme.js";
@@ -18,6 +18,8 @@ import { MarketingView } from "./views/Marketing.jsx";
 import { SetupView } from "./views/Setup.jsx";
 import { ApprovalsView } from "./views/Approvals.jsx";
 import { MfaStep, MfaEnrol } from "./views/Security.jsx";
+import { PurchasesView, PaymentsView, FoodSafetyView } from "./views/Business.jsx";
+import { ScaleProvider } from "./lib/scale.jsx";
 
 const NAV = [
   { section: "Overview", items: [
@@ -26,14 +28,21 @@ const NAV = [
   ] },
   { section: "Ranch", items: [{ id: "ranch", label: "Livestock", icon: Beef }] },
   { section: "Processing", items: [{ id: "processing", label: "Processing Batches", icon: Scissors }] },
-  { section: "Inventory", items: [{ id: "inventory", label: "Inventory & Cold Room", icon: Warehouse }] },
+  { section: "Inventory", items: [
+    { id: "inventory", label: "Inventory & Cold Room", icon: Warehouse },
+    { id: "foodsafety", label: "Food Safety (HACCP)", icon: ListChecks },
+  ] },
   { section: "Sales", items: [
     { id: "pos", label: "POS", icon: ShoppingCart },
     { id: "orders", label: "Orders", icon: ClipboardList },
     { id: "customers", label: "Customers", icon: Users },
     { id: "delivery", label: "Delivery", icon: Truck },
   ] },
-  { section: "Procurement", items: [{ id: "procurement", label: "Suppliers", icon: Package }] },
+  { section: "Procurement", items: [
+    { id: "purchases", label: "Purchase Orders", icon: FileText },
+    { id: "procurement", label: "Suppliers", icon: Package },
+  ] },
+  { section: "Money", items: [{ id: "payments", label: "Payment Reconciliation", icon: Landmark }] },
   { section: "Marketing", items: [{ id: "marketing", label: "Marketing & Content", icon: Megaphone }] },
   { section: "Reports", items: [{ id: "reports", label: "Management Reports", icon: FileBarChart }] },
   { section: "System", items: [
@@ -174,6 +183,19 @@ export default function App() {
       (r) => r.variances ? `${r.code} submitted — ${r.variances} difference${r.variances === 1 ? "" : "s"} sent for approval` : `${r.code} submitted — everything matched`),
     cancelCount: (code) => act(() => api(`/counts/${encodeURIComponent(code)}/cancel`, { method: "POST" }), `${code} cancelled`),
     trace: (lot) => api(`/trace/${encodeURIComponent(lot)}`),
+    createPO: (body) => act(() => api("/purchase-orders", { method: "POST", body }), (r) => r.status === "Approved" ? `${r.code} raised and approved` : `${r.code} raised — waiting for approval`),
+    decidePO: (code, decision, note) => act(() => api(`/purchase-orders/${encodeURIComponent(code)}/decide`, { method: "POST", body: { decision, note } }), (r) => `${r.code} ${r.status.toLowerCase()}`),
+    receivePO: (code, body) => act(() => api(`/purchase-orders/${encodeURIComponent(code)}/receive`, { method: "POST", body }), (r) => `${r.code}: delivery received (${r.reference}) — ${r.status.toLowerCase()}`),
+    closePO: (code, note) => act(() => api(`/purchase-orders/${encodeURIComponent(code)}/close`, { method: "POST", body: { note } }), (r) => `${r.code} ${r.status.toLowerCase()}`),
+    getRecon: (day, method) => api(`/reconciliations/${day}/${encodeURIComponent(method)}`),
+    recordRecon: (body) => act(() => api("/reconciliations", { method: "POST", body }), (r) => r.variance === 0 ? `${r.method} matched — sent for sign-off` : `${r.method} recorded with a ₦${Math.abs(r.variance).toLocaleString("en-NG")} difference — sent for sign-off`),
+    reviewRecon: (id, note) => act(() => api(`/reconciliations/${id}/review`, { method: "POST", body: { note } }), "Reconciliation signed off"),
+    completeHaccp: (id, body) => act(() => api(`/haccp/${id}/complete`, { method: "POST", body }), (r) => r.allOk ? "Checklist complete — all passed" : `Checklist complete — ${r.failures} failure${r.failures === 1 ? "" : "s"} sent to a manager`),
+    verifyHaccp: (id, note) => act(() => api(`/haccp/runs/${id}/verify`, { method: "POST", body: { note } }), "Checklist verified"),
+    addChecklist: (body) => act(() => api("/haccp/checklists", { method: "POST", body }), `${body.name} added`),
+    updateChecklist: (id, body, msg = "Checklist updated") => act(() => api(`/haccp/checklists/${id}`, { method: "PATCH", body }), msg),
+    runBackup: () => act(() => api("/backups/run", { method: "POST" }), (r) => `Backup stored off-site — ${r.rows.toLocaleString("en-NG")} rows`),
+    testRestore: () => act(() => api("/backups/test", { method: "POST" }), (r) => r.ok ? `Restore test passed — ${r.tables} tables, ${r.rows.toLocaleString("en-NG")} rows` : `Restore test FAILED: ${r.problems[0]}`),
     saveLimits: (body) => act(() => api("/settings/limits", { method: "PATCH", body }), "Approval limits saved"),
     createUser: (body) => act(() => api("/users", { method: "POST", body }), (r) => `${r.name} can now sign in`),
     updateUser: (id, body) => act(() => api(`/users/${id}`, { method: "PATCH", body }), "User updated"),
@@ -211,6 +233,7 @@ export default function App() {
   const permit = (p) => can(user.roles, p);
 
   return (
+    <ScaleProvider>
     <div className="f-body min-h-screen flex" style={{ background: C.cream }}>
       {toast && <Toast toast={toast} onDone={() => setToast(null)} />}
       {aiOpen && data.insights && <ButcherAI insights={data.insights} onClose={() => setAiOpen(false)} />}
@@ -232,7 +255,10 @@ export default function App() {
 
       <Sidebar route={route} setRoute={goTo} mobileOpen={mobileNavOpen} onClose={() => setMobileNavOpen(false)} user={user} onLogout={logout}
         badges={{ approvals: (data.approvals ? [...data.approvals.adjustments.filter(() => data.approvals.canApproveStock), ...data.approvals.refunds.filter(() => data.approvals.canApproveRefunds)].filter((x) => x.status === "Pending" && !x.mine).length : 0)
-          + (data.tills?.review || []).filter((t) => t.status === "Closed" && !t.mine).length }} />
+          + (data.tills?.review || []).filter((t) => t.status === "Closed" && !t.mine).length,
+          purchases: permit("purchasing.approve") ? (data.purchases || []).filter((p) => p.status === "Pending Approval" && p.createdById !== user.id).length : 0,
+          payments: (data.payments?.outstanding || 0) + (data.payments?.days || []).filter((d) => d.rec?.status === "Recorded" && !d.rec.mine).length,
+          foodsafety: (data.foodSafety?.checklists || []).filter((c) => c.due).length + (permit("haccp.verify") ? (data.foodSafety?.runs || []).filter((r) => !r.verifiedBy && r.completedById !== user.id).length : 0) }} />
 
       <div className="flex-1 flex flex-col min-w-0">
         <TopBar
@@ -251,6 +277,9 @@ export default function App() {
           {route === "customers" && <CustomersView data={data} actions={actions} permit={permit} />}
           {route === "delivery" && <DeliveryView data={data} actions={actions} permit={permit} />}
           {route === "procurement" && <ProcurementView data={data} actions={actions} permit={permit} />}
+          {route === "purchases" && <PurchasesView data={data} actions={actions} permit={permit} />}
+          {route === "payments" && <PaymentsView data={data} actions={actions} permit={permit} />}
+          {route === "foodsafety" && <FoodSafetyView data={data} actions={actions} permit={permit} />}
           {route === "marketing" && <MarketingView data={data} actions={actions} permit={permit} />}
           {route === "reports" && <ReportsView data={data} notify={notify} />}
           {route === "setup" && <SetupView data={data} actions={actions} permit={permit} />}
@@ -259,6 +288,7 @@ export default function App() {
         </main>
       </div>
     </div>
+    </ScaleProvider>
   );
 }
 

@@ -3,6 +3,7 @@ import { Beef, Scissors, Plus, Check, ChevronRight, ArrowDown, Activity, Boxes, 
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
 import { C, nairaFmt, kgFmt } from "../lib/theme.js";
 import { TraceModal } from "./Operations.jsx";
+import { ScaleReader, useScale } from "../lib/scale.jsx";
 import { KpiCard, SectionHeader, Btn, StatusPill, Modal, Field, Input, Select, Card, Table, Empty, useBusy } from "../components/ui.jsx";
 
 const STATUSES = ["Active", "Growing", "Ready for Processing", "Ready for Sale", "Sold"];
@@ -316,6 +317,9 @@ function ProcessingModal({ animal, locations, onClose, onComplete }) {
     ? [["premium", "Premium Cuts"], ["stew", "Stew Cuts"], ["boneless", "Boneless"], ["minced", "Minced"], ["other", "Other Cuts"]]
     : [["premium", "Prime Cuts"], ["stew", "Stew Cuts"]];
   const byFields = [["bones", "Bones"], ["offal", "Offal"], ["fat", "Fat"], ["kpomo", "Kpomo"], ["waste", "Waste"]];
+  const scale = useScale();
+  const [weighInto, setWeighInto] = useState("premium");
+  const [weighed, setWeighed] = useState([]); // log of trays weighed on the scale
 
   const complete = () => run(async () => {
     const r = await onComplete({ animal: animal.id, location, outputs: v });
@@ -341,6 +345,21 @@ function ProcessingModal({ animal, locations, onClose, onComplete }) {
           <Select value={location} onChange={(e) => setLocation(e.target.value)}>{locations.map((l) => <option key={l}>{l}</option>)}</Select>
         </Field>
       </div>
+
+      {scale?.supported && (
+        <div className="rounded-xl p-3 mb-5" style={{ background: C.cream }}>
+          <div className="flex flex-wrap items-end gap-3">
+            <Field label="Weigh each tray into">
+              <Select value={weighInto} onChange={(e) => setWeighInto(e.target.value)}>{[...fields, ...byFields].map(([k, l]) => <option key={k} value={k}>{l}</option>)}</Select>
+            </Field>
+            <div className="flex-1 min-w-0">
+              <ScaleReader label={`Add to ${[...fields, ...byFields].find(([k]) => k === weighInto)[1]}`}
+                onWeight={(kg) => { setV((p) => ({ ...p, [weighInto]: round(Number(p[weighInto] || 0) + kg) })); setWeighed((w) => [...w, `${kg} kg → ${[...fields, ...byFields].find(([k]) => k === weighInto)[1]}`]); }} />
+            </div>
+          </div>
+          {weighed.length > 0 && <p className="f-body text-[11px] mt-2" style={{ color: C.muted }}>Weighed: {weighed.slice(-6).join(" · ")}{weighed.length > 6 ? ` (+${weighed.length - 6} more)` : ""}</p>}
+        </div>
+      )}
 
       <h4 className="f-body text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.muted }}>
         Saleable Meat (KG){!isCattle && ` — stocked as ${animal.species === "Goat" ? "Goat Meat" : "Ram Meat"}`}

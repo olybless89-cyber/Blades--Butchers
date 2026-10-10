@@ -10,6 +10,7 @@ import { migrate } from "./migrate.js";
 import { bootstrap } from "./seed.js";
 import { apiRouter } from "./routes.js";
 import { errorHandler } from "./util.js";
+import { startScheduler } from "./backup.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(__dirname, "..", "dist");
@@ -68,6 +69,7 @@ async function start() {
   await migrate();
   await bootstrap();
   const server = app.listen(PORT, "0.0.0.0", () => console.log(`BladeOS running on port ${PORT}`));
+  startScheduler(); // daily off-site backup + monthly restore test (when BACKUP_* variables are set)
   const shutdown = () => server.close(() => pool.end().then(() => process.exit(0)));
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);

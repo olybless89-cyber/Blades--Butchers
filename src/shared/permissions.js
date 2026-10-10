@@ -53,6 +53,8 @@ export const PERMISSIONS = {
   "counts.schedule":        MGMT,                                      // schedule blind stock counts
   "counts.perform":         [...MGMT, "Storekeeper"],                  // count without seeing the system figure
   "trace.view":             MGMT,                                      // batch recall trace (shows customers)
+  "haccp.complete":         [...MGMT, "Storekeeper", "Production Manager", "Cashier"], // food-safety checklists
+  "haccp.verify":           MGMT,                                      // manager verifies (never their own)
 
   // Sales
   "pos.use":                [...MGMT, "Cashier"],
@@ -71,6 +73,12 @@ export const PERMISSIONS = {
   "procurement.view":       MGMT,
   "procurement.edit":       MGMT,     // suppliers and their invoices
   "payables.pay":           EXEC,     // the person recording invoices can't also pay them
+  "purchasing.view":        [...MGMT, "Storekeeper"],                  // storekeepers see what to receive, never prices
+  "purchasing.create":      MGMT,     // raise purchase orders (Owner/MD's are approved on creation)
+  "purchasing.approve":     MGMT,     // never your own; Operations Manager up to the purchase limit
+
+  // Money
+  "payments.reconcile":     MGMT,     // match transfers / card takings to the bank and terminal statements
 
   // Marketing
   "marketing.view":         [...EXEC, "Marketing Manager"],
@@ -81,6 +89,8 @@ export const PERMISSIONS = {
   "users.manage":           ["Owner", "Administrator"],
   "audit.view":             [...EXEC, "Administrator"],
   "controls.manage":        EXEC,                                      // approval limits
+  "backups.manage":         ["Owner", "Administrator"],               // backup status, back up now, restore test
+  "backups.download":       ["Owner"],                                 // a full copy of the data leaves the building
 };
 
 /** `roles` may be one role or an array of roles; any of them granting `perm` is enough. */
@@ -93,6 +103,8 @@ export function can(roles, perm) {
 export const canAny = (roles, perms) => perms.some((p) => can(roles, p));
 
 export const APPROVAL_PERMS = ["stock.adjust.request", "stock.adjust.approve", "stock.adjust.direct", "refunds.request", "refunds.approve", "refunds.direct", "till.review"];
+/** Approvals above the Operations Manager's limits (and any limit-free sign-off) need one of these. */
+export const UNLIMITED_APPROVER = "controls.manage";
 
 // Which permission (or any of a list) unlocks each screen in the app. null = everyone.
 export const ROUTE_PERMS = {
@@ -106,6 +118,9 @@ export const ROUTE_PERMS = {
   customers: "customers.view",
   delivery: "delivery.view",
   procurement: "procurement.view",
+  purchases: "purchasing.view",
+  payments: "payments.reconcile",
+  foodsafety: ["haccp.complete", "haccp.verify"],
   marketing: "marketing.view",
   reports: "reports.view",
   setup: "setup.manage",
@@ -139,3 +154,10 @@ export const PASSWORD_MIN = 10;
 /** Two-step sign-in is mandatory for these roles. */
 export const MFA_REQUIRED_ROLES = LEADERSHIP_ROLES;
 export const EXPIRY_WARN_DAYS = 2;
+
+/** Weighed goods may arrive up to this much over the ordered quantity (KG lines only). */
+export const PO_OVER_RECEIPT_PCT = 5;
+/** Supplier invoice vs goods received: differences within this are treated as matched. */
+export const PO_MATCH_TOLERANCE_PCT = 0.5;
+export const PO_STATUSES = ["Pending Approval", "Approved", "Partly Received", "Received", "Closed", "Rejected", "Cancelled"];
+export const RECON_METHODS = ["Transfer", "POS Card"];

@@ -19,6 +19,16 @@ One Railway service serves both the API (`/api`) and the app.
 | `ADMIN_PASSWORD` | 8+ characters — temporary: BladeOS makes the Owner choose a new one at first sign-in |
 | `ADMIN_NAME` | e.g. `Jeffrey` |
 
+Off-site backups (strongly recommended — see *Backups* below):
+
+| Variable | Value |
+|---|---|
+| `BACKUP_S3_ENDPOINT` | e.g. `https://<account-id>.r2.cloudflarestorage.com` (Cloudflare R2) |
+| `BACKUP_S3_BUCKET` | a private bucket, e.g. `bladeos-backups` |
+| `BACKUP_S3_REGION` | `auto` for R2; the bucket's region elsewhere |
+| `BACKUP_S3_ACCESS_KEY` / `BACKUP_S3_SECRET_KEY` | an API token limited to that bucket (read + write) |
+| `BACKUP_PASSPHRASE` | 12+ characters — **keep a copy outside Railway** |
+
 Do **not** set `NODE_ENV` — the start script sets it, and setting it at build time skips Vite.
 
 4. **Settings → Networking → Generate Domain.** On boot the server runs migrations,
@@ -78,6 +88,23 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
     requests for approval.
   - *Approval limits* (Business Setup → Controls, Owner/MD): what an Operations Manager may approve for write-offs,
     refunds and till variances; above that, Owner or MD.
+- **Business controls** (`server/business.js`):
+  - *Purchase orders:* raise → a different manager approves (Operations Managers up to the *purchase* limit; Owner/MD orders
+    are approved on creation) → storekeepers receive deliveries only against an approved PO (weighed lines up to 5% over;
+    each delivery becomes a lot with the supplier's batch number and use-by) → the supplier invoice is recorded against the PO
+    and **3-way matched** (ordered / received / invoiced). A mismatch alerts whoever pays suppliers. Storekeepers never see prices.
+  - *Payment reconciliation:* each sale records when it was paid and, for transfers / card, the sender or slip reference.
+    Each day's transfer and card takings (less refunds) are compared with the bank statement and terminal settlement;
+    differences need an explanation and a second manager's sign-off (above the *payment variance* limit: Owner/MD).
+    If takings for a day change after it was recorded, sign-off is blocked until it's recorded again.
+  - *Food safety (HACCP):* daily and weekly checklists (opening checks, closing clean-down, pest control, equipment &
+    calibration — editable in *Food Safety → Edit checklists*). Every item answered; any "No" needs the corrective action;
+    a manager who didn't do it verifies. Records export to CSV for inspections. Cold-chain readings sit alongside.
+  - *Digital scale:* the POS and processing screens read weight straight from a USB / RS-232 scale (Web Serial — Chrome or
+    Edge on a computer, over HTTPS). Only a *stable* reading can be used; overload and moving weights are refused.
+    Sales record whether each KG line came off the scale; *Reports* shows the share. Settings (baud rate, poll command)
+    under the ⚙ next to *Connect scale*, saved per computer. Tested against a simulated scale — confirm with yours.
+  - *Backups* (`server/backup.js`): see below.
 - **Stock** is held per product *per location*, broken down by lot. Every change writes a `stock_movements` row.
   Sales, transfers, adjustments, processing and cancellations run in transactions with row locks,
   and the database refuses negative stock — concurrent tills can't oversell.
@@ -101,15 +128,27 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
 ## Layout
 ```
 server/   index.js · routes.js (writes) · controls.js (approvals, refunds) · operations.js (tills, temps, counts, trace, limits)
+          business.js (purchase orders, payment reconciliation, HACCP) · backup.js + restore.js (backups)
           state.js (reads/KPIs) · stock.js (lots, FEFO) · auth.js + totp.js (sign-in) · seed.js · migrate.js
 migrations/  numbered .sql files, applied once each on boot
 src/      App.jsx (shell) · views/ · components/ · lib/ · shared/permissions.js
 ```
 
 ## Operations
-- **Backups:** enable Railway's Postgres backups, or run `pg_dump "$DATABASE_URL" > bladeos-$(date +%F).sql` on a schedule.
+- **Backups:** with the `BACKUP_*` variables set, BladeOS makes a consistent copy of every table each night after 02:00 Lagos
+  time, encrypts it (AES-256-GCM, key from `BACKUP_PASSPHRASE`), uploads it, downloads it again to check the fingerprint, and
+  deletes copies older than `BACKUP_RETENTION_DAYS` (always keeping the newest 7). Once a month it **restore-tests** the newest
+  copy: loads it into a throw-away schema, checks every table's row count and every foreign-key link, then drops it.
+  *Administration → Backups* shows the status, with *Back up now* and *Run restore test*; the Owner can also download a copy.
+  Alerts appear if there's no good backup for 36 hours or a restore test fails. Also turn on Railway's own Postgres backups.
+- **Restoring:** `railway run node server/restore.js --latest` shows what it would restore; add `--yes` to replace all data
+  (`--list` lists copies, `--key=<name>` picks one, or pass a downloaded `.bdb` file). Restore into a new Postgres service
+  first if you want to inspect before switching over. Keep the same `JWT_SECRET`, or everyone re-enrols two-step sign-in.
 - **Schema changes:** add `migrations/002_*.sql`; it runs automatically on next deploy.
 - **Forgotten password / lost phone:** an Owner/Administrator resets it under *Administration → Staff Accounts*
   (Administrators can't reset leadership accounts — only the Owner can).
-- **Daily routine:** open tills with a float; log cold-room and freezer temperatures twice a day; close tills at end of
-  day and sign off cash-ups; write off anything past its use-by date; run a blind count per location each week.
+- **Daily routine:** opening checks before trading; open tills with a float; log cold-room and freezer temperatures twice a
+  day; reconcile yesterday's transfers and card takings to the bank and terminal; receive deliveries against purchase orders;
+  closing clean-down; close tills and sign off cash-ups; write off anything past its use-by date.
+  **Weekly:** blind count per location, pest-control and equipment checklists, verify the week's food-safety records.
+  **Monthly:** glance at *Administration → Backups* — the restore test should say *Passed*.

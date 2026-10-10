@@ -24,6 +24,10 @@ const PILL = {
   Critical: [C.danger, "#F5E4E2"], Low: [C.warn, "#F6EEDD"],
   Live: [C.ok, "#E7F0E9"], Next: [C.gold, "#F6EEDD"], Planned: [C.muted, "#EDEAE4"],
   Inactive: [C.muted, "#EDEAE4"],
+  "Partly Received": [C.gold, "#F6EEDD"], Received: [C.ok, "#E7F0E9"], Closed: [C.muted, "#EDEAE4"], Rejected: [C.danger, "#F5E4E2"],
+  Recorded: [C.gold, "#F6EEDD"], Reviewed: [C.ok, "#E7F0E9"], Matched: [C.ok, "#E7F0E9"], Mismatch: [C.danger, "#F5E4E2"],
+  "Awaiting invoice": [C.gold, "#F6EEDD"], Succeeded: [C.ok, "#E7F0E9"], Passed: [C.ok, "#E7F0E9"], Failed: [C.danger, "#F5E4E2"],
+  Running: [C.gold, "#F6EEDD"], Due: [C.danger, "#F5E4E2"], Done: [C.ok, "#E7F0E9"], Verified: [C.ok, "#E7F0E9"], "To verify": [C.gold, "#F6EEDD"],
 };
 
 export function StatusPill({ status }) {

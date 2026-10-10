@@ -3,6 +3,7 @@ import { UserPlus, Pencil, ShieldCheck, KeyRound } from "lucide-react";
 import { C, initials } from "../lib/theme.js";
 import { ROLES, PERMISSIONS, LEADERSHIP_ROLES, COMBINABLE_ROLES, PASSWORD_MIN } from "../shared/permissions.js";
 import { SectionHeader, Btn, StatusPill, Modal, Field, Input, Select, Card, Table, useBusy } from "../components/ui.jsx";
+import { BackupsCard } from "./Business.jsx";
 
 /* ============================================================ ADMIN */
 const PERM_LABELS = {
@@ -30,6 +31,7 @@ export function AdminView({ data, actions, permit, user }) {
     <div>
       {editing && <UserModal target={editing === "new" ? null : editing} me={user} onClose={() => setEditing(null)} actions={actions} />}
       <SectionHeader eyebrow="System" title="Administration" />
+      <BackupsCard data={data} actions={actions} permit={permit} />
 
       {canManage && users && (
         <Card pad={false} className="mb-6">

@@ -235,7 +235,8 @@ function PlaceForm({ tab, item, onClose, actions }) {
 }
 
 function ControlsPanel({ limits = {}, actions }) {
-  const [f, setF] = useState({ adjustment: String(limits.adjustment ?? 50000), refund: String(limits.refund ?? 50000), tillVariance: String(limits.tillVariance ?? 5000) });
+  const [f, setF] = useState({ adjustment: String(limits.adjustment ?? 50000), refund: String(limits.refund ?? 50000), tillVariance: String(limits.tillVariance ?? 5000),
+    purchase: String(limits.purchase ?? 500000), paymentVariance: String(limits.paymentVariance ?? 5000) });
   const [busy, run] = useBusy();
   const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
   const valid = Object.values(f).every((v) => v !== "" && Number.isInteger(Number(v)) && Number(v) >= 0);
@@ -243,6 +244,8 @@ function ControlsPanel({ limits = {}, actions }) {
     ["adjustment", "Stock write-offs & corrections", "value at cost"],
     ["refund", "Refunds", "amount refunded"],
     ["tillVariance", "Till cash-up variance", "over or short"],
+    ["purchase", "Purchase orders", "order total"],
+    ["paymentVariance", "Bank / card reconciliation variance", "statement vs BladeOS"],
   ];
   return (
     <Card>
