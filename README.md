@@ -180,6 +180,16 @@ migrations/  numbered .sql files, applied once each on boot
 src/      App.jsx (shell) · views/ (Home.jsx = the home page) · components/ · lib/ · shared/permissions.js
 ```
 
+## Speed and reliability
+
+- The till and sign-in load only what they need (≈150 KB compressed); chart screens (dashboard, reports, livestock)
+  load on first use. Everything is still stored on the device for offline use.
+- A new version installs in the background and switches over by itself as soon as nobody is mid-task.
+- No request can hang the app: calls give up after 30 s like a dropped connection (sales can't double-charge —
+  each carries a unique reference), device storage that doesn't answer within 4 s is bypassed, and if start-up takes
+  over 10 s the screen offers **Reload** and **Repair app** (clears this device's cached copy; offline sales are kept).
+- Phones: every table turns into readable cards — nothing scrolls sideways.
+
 ## Security, privacy and accessibility
 
 - **Sign-in only:** BladeOS is internal, so nothing about the business, its controls or its set-up is shown before

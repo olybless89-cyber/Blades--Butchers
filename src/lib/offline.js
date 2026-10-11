@@ -12,17 +12,23 @@ const DB = "bladeos", VER = 1;
 let dbp = null;
 const mem = { kv: new Map(), outbox: new Map(), seq: 0 };          // fallback when IndexedDB isn't available
 const hasIDB = () => typeof indexedDB !== "undefined";
+let idbBroken = false;
+const hasIDBok = () => hasIDB() && !idbBroken;
 function open() {
-  if (!hasIDB()) return null;
+  if (!hasIDBok()) return null;
   dbp ??= new Promise((res, rej) => {
+    // If the browser's storage doesn't answer (blocked by another window, or damaged), don't hang the app:
+    // after 4 s carry on with in-memory storage for this visit.
+    const t = setTimeout(() => { idbBroken = true; console.warn("BladeOS: device storage isn't responding — using memory for now."); res(null); }, 4000);
     const r = indexedDB.open(DB, VER);
+    r.onblocked = () => console.warn("BladeOS: device storage is busy in another window.");
     r.onupgradeneeded = () => {
       const d = r.result;
       if (!d.objectStoreNames.contains("kv")) d.createObjectStore("kv");
       if (!d.objectStoreNames.contains("outbox")) d.createObjectStore("outbox", { keyPath: "id", autoIncrement: true });
     };
-    r.onsuccess = () => res(r.result);
-    r.onerror = () => rej(r.error);
+    r.onsuccess = () => { clearTimeout(t); const d = r.result; d.onversionchange = () => d.close(); res(d); };
+    r.onerror = () => { clearTimeout(t); idbBroken = true; res(null); };
   });
   return dbp;
 }
@@ -42,9 +48,9 @@ async function tx(store, mode, fn) {
 const req = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
 
 export const kv = {
-  async get(key) { if (!hasIDB()) return mem.kv.get(key); return tx("kv", "readonly", (s) => req(s.get(key))); },
-  async set(key, val) { if (!hasIDB()) { mem.kv.set(key, val); return; } return tx("kv", "readwrite", (s) => { s.put(val, key); }); },
-  async del(key) { if (!hasIDB()) { mem.kv.delete(key); return; } return tx("kv", "readwrite", (s) => { s.delete(key); }); },
+  async get(key) { if (!hasIDBok() || !(await open())) return mem.kv.get(key); return tx("kv", "readonly", (s) => req(s.get(key))); },
+  async set(key, val) { if (!hasIDBok() || !(await open())) { mem.kv.set(key, val); return; } return tx("kv", "readwrite", (s) => { s.put(val, key); }); },
+  async del(key) { if (!hasIDBok() || !(await open())) { mem.kv.delete(key); return; } return tx("kv", "readwrite", (s) => { s.delete(key); }); },
 };
 
 /* ======================================================================= cached session + data */
@@ -103,17 +109,17 @@ export async function checkOfflinePin(userId, pin) {
 export const outbox = {
   async add(item) {
     const rec = { ...item, createdAt: new Date().toISOString(), status: "pending", attempts: 0 };
-    if (!hasIDB()) { const id = ++mem.seq; mem.outbox.set(id, { ...rec, id }); changed(); return id; }
+    if (!hasIDBok() || !(await open())) { const id = ++mem.seq; mem.outbox.set(id, { ...rec, id }); changed(); return id; }
     const id = await tx("outbox", "readwrite", (s) => req(s.add(rec)));
     changed();
     return id;
   },
   async all() {
-    if (!hasIDB()) return [...mem.outbox.values()].sort((a, b) => a.id - b.id);
+    if (!hasIDBok() || !(await open())) return [...mem.outbox.values()].sort((a, b) => a.id - b.id);
     return (await tx("outbox", "readonly", (s) => req(s.getAll()))).sort((a, b) => a.id - b.id);
   },
-  async put(rec) { if (!hasIDB()) { mem.outbox.set(rec.id, rec); changed(); return; } await tx("outbox", "readwrite", (s) => { s.put(rec); }); changed(); },
-  async remove(id) { if (!hasIDB()) { mem.outbox.delete(id); changed(); return; } await tx("outbox", "readwrite", (s) => { s.delete(id); }); changed(); },
+  async put(rec) { if (!hasIDBok() || !(await open())) { mem.outbox.set(rec.id, rec); changed(); return; } await tx("outbox", "readwrite", (s) => { s.put(rec); }); changed(); },
+  async remove(id) { if (!hasIDBok() || !(await open())) { mem.outbox.delete(id); changed(); return; } await tx("outbox", "readwrite", (s) => { s.delete(id); }); changed(); },
 };
 
 /* ======================================================================= status for the banner */

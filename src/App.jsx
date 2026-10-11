@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import {
   LayoutDashboard, Beef, Scissors, Warehouse, ShoppingCart, Users, Truck, Package, Megaphone, FileBarChart,
   Search, Bell, X, LogIn, Sparkles, ShieldCheck, Settings, ClipboardList, ClipboardCheck, Menu, LogOut, KeyRound, Loader2, RefreshCw, FileText, Landmark, ListChecks, Wallet,
@@ -8,8 +8,15 @@ import { C, initials } from "./lib/theme.js";
 import { can, routeAllowed, PASSWORD_MIN, weakPin } from "./shared/permissions.js";
 import { Btn, Toast, ICONS, Modal, Field, Input, useBusy } from "./components/ui.jsx";
 import ButcherAI from "./components/ButcherAI.jsx";
-import { Dashboard, ReportsView, RoadmapView } from "./views/Overview.jsx";
-import { RanchView, ProcessingView } from "./views/Ranch.jsx";
+// Charts are heavy (≈150 KB): the screens that draw them load on first use, so the till and sign-in open fast.
+const named = (load, name) => lazy(() => load().then((m) => ({ default: m[name] })));
+const loadOverview = () => import("./views/Overview.jsx");
+const loadRanch = () => import("./views/Ranch.jsx");
+const Dashboard = named(loadOverview, "Dashboard");
+const ReportsView = named(loadOverview, "ReportsView");
+const RoadmapView = named(loadOverview, "RoadmapView");
+const RanchView = named(loadRanch, "RanchView");
+const ProcessingView = named(loadRanch, "ProcessingView");
 import { InventoryView } from "./views/Inventory.jsx";
 import { OrdersView, CustomersView, DeliveryView, CashierSalesView } from "./views/Sales.jsx";
 import { POSView } from "./views/POS.jsx";
@@ -434,7 +441,7 @@ export default function App() {
       )}
       {reportTab && (
         <Modal title="Report Center" onClose={() => setReportTab(null)} wide>
-          <ReportsView data={data} initialTab={reportTab} notify={notify} />
+          <Suspense fallback={<Loader2 size={16} className="animate-spin" />}><ReportsView data={data} initialTab={reportTab} notify={notify} /></Suspense>
         </Modal>
       )}
 
@@ -455,6 +462,7 @@ export default function App() {
         <OfflineBanner sync={sync} offlineSession={offlineSession} onOpen={() => setSyncOpen(true)} onSignIn={logout} />
         <UpdateBanner />
         <main className="flex-1 overflow-y-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-7">
+          <Suspense fallback={<div className="flex items-center gap-2 f-body text-sm py-10 justify-center" style={{ color: C.muted }}><Loader2 size={16} className="animate-spin" /> Loading…</div>}>
           {route === "dashboard" && <Dashboard data={data} onOpenReport={setReportTab} onNavigate={goTo} />}
           {route === "approvals" && <ApprovalsView data={data} actions={actions} permit={permit} />}
           {route === "ranch" && <RanchView data={data} actions={actions} permit={permit} />}
@@ -474,6 +482,7 @@ export default function App() {
           {route === "setup" && <SetupView data={data} actions={actions} permit={permit} />}
           {route === "roadmap" && <RoadmapView />}
           {route === "admin" && <AdminView data={data} actions={actions} permit={permit} user={user} />}
+          </Suspense>
         </main>
       </div>
     </div>
@@ -482,7 +491,19 @@ export default function App() {
 }
 
 /* ============================================================ splash / login */
+/** Throw away this device's cached copy of the app (service worker + file cache) and load it fresh.
+ *  The offline upload queue and saved data in IndexedDB are left alone. */
+async function repairApp() {
+  try {
+    for (const r of (await navigator.serviceWorker?.getRegistrations?.()) || []) await r.unregister();
+    for (const k of (await window.caches?.keys?.()) || []) await caches.delete(k);
+  } catch { /* nothing cached */ }
+  window.location.reload();
+}
+
 function Splash({ error, onRetry, onLogout }) {
+  const [slow, setSlow] = useState(false);
+  useEffect(() => { const t = setTimeout(() => setSlow(true), 10000); return () => clearTimeout(t); }, []);
   return (
     <div className="min-h-screen flex items-center justify-center px-6" style={{ background: C.cream }}>
       <div className="text-center">
@@ -495,9 +516,20 @@ function Splash({ error, onRetry, onLogout }) {
             </div>
           </>
         ) : (
-          <div className="flex items-center gap-2 f-body text-sm" style={{ color: C.muted }}>
-            <Loader2 size={16} className="animate-spin" /> Loading BladeOS…
-          </div>
+          <>
+            <div className="flex items-center justify-center gap-2 f-body text-sm" style={{ color: C.muted }}>
+              <Loader2 size={16} className="animate-spin" /> Loading BladeOS…
+            </div>
+            {slow && (
+              <div className="mt-6 max-w-xs mx-auto" data-slow-start>
+                <p className="f-body text-xs mb-3" style={{ color: C.muted }}>This is taking longer than usual. Reload, or repair this device's copy of BladeOS (sales saved offline are kept).</p>
+                <div className="flex gap-2 justify-center">
+                  <Btn small icon={RefreshCw} onClick={() => window.location.reload()}>Reload</Btn>
+                  <Btn small variant="ghost" onClick={repairApp}>Repair app</Btn>
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

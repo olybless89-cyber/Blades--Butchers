@@ -38,9 +38,14 @@ if ("serviceWorker" in navigator && import.meta.env.PROD) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("/sw.js").then((reg) => {
       const ready = (w) => {
-        // A new version is installed and waiting: offer it; the till applies it between sales.
+        // A new version is installed and waiting. It's applied on its own as soon as nobody is mid-task
+        // (no ticket on the till, no dialog open, not typing) — an old copy never lingers. The banner offers it too.
         window.__bladeosUpdate = () => { w.postMessage("skipWaiting"); };
         window.dispatchEvent(new Event("bladeos-update"));
+        const idle = () => !window.__bladeosBusy && !document.querySelector("[role=dialog]")
+          && !["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName || "");
+        const tryApply = () => { if (idle()) w.postMessage("skipWaiting"); else setTimeout(tryApply, 15000); };
+        setTimeout(tryApply, 1500);
       };
       if (reg.waiting && navigator.serviceWorker.controller) ready(reg.waiting);
       reg.addEventListener("updatefound", () => {

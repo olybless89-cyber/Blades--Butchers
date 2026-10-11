@@ -29,7 +29,7 @@ export default defineConfig({
     chunkSizeWarningLimit: 700,
     rollupOptions: {
       output: {
-        manualChunks: { charts: ["recharts"], icons: ["lucide-react"] },
+        manualChunks: { icons: ["lucide-react"] }, // charts split off on their own with the screens that use them
       },
     },
   },

@@ -154,14 +154,19 @@ export function printHtml(html) {
     f.setAttribute("aria-hidden", "true");
     f.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
     document.body.appendChild(f);
-    const done = () => { setTimeout(() => { f.remove(); resolve(true); }, 500); };
+    // Hand the keyboard straight back to the till: otherwise Enter (next sale) and the barcode scanner's keystrokes
+    // would go to the hidden receipt frame until it's removed.
+    let finished = false;
+    const done = () => { if (finished) return; finished = true; try { window.focus(); document.activeElement?.blur?.(); } catch { /* */ } setTimeout(() => { f.remove(); resolve(true); }, 300); };
     const d = f.contentWindow.document;
     d.open(); d.write(html); d.close();
     const go = () => {
       try {
         f.contentWindow.addEventListener("afterprint", done, { once: true });
+        f.contentWindow.addEventListener("keydown", (e) => window.dispatchEvent(new KeyboardEvent("keydown", { key: e.key, code: e.code, bubbles: true })));
         f.contentWindow.focus();
         f.contentWindow.print();
+        window.focus();   // print() returns once the job is sent (or straight away with silent kiosk printing)
       } catch { /* test environments */ }
       setTimeout(done, 1500); // some browsers never fire afterprint
     };

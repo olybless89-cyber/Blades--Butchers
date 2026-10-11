@@ -172,10 +172,21 @@ export function Card({ children, className = "", pad = true }) {
   return <div className={`rounded-2xl border ${pad ? "p-4 sm:p-5" : "overflow-hidden"} ${className}`} style={{ background: "#fff", borderColor: C.border }}>{children}</div>;
 }
 
-export function Table({ head, minWidth = 640, children, empty }) {
+/**
+ * On phones every table turns into a list of cards: each cell shows its column name on the left (set here from
+ * `head`), so nothing has to be scrolled sideways. `stack={false}` keeps a real table (e.g. wide matrices).
+ */
+export function Table({ head, minWidth = 640, children, empty, stack = true }) {
+  const ref = React.useRef(null);
+  React.useLayoutEffect(() => {
+    if (!stack || !ref.current) return;
+    for (const tr of ref.current.querySelectorAll("tbody tr")) {
+      [...tr.children].forEach((td, i) => { const h = head[i]; td.setAttribute("data-label", typeof h === "string" ? h : ""); });
+    }
+  });
   return (
     <div className="overflow-x-auto">
-      <table className="w-full" style={{ minWidth }}>
+      <table ref={ref} className={`w-full ${stack ? "tbl-stack" : ""}`} style={{ minWidth }}>
         <thead>
           <tr className="f-body text-xs uppercase tracking-wide" style={{ color: C.muted }}>
             {head.map((h, i) => <th key={i} className="text-left px-5 py-2.5 font-semibold whitespace-nowrap">{h}</th>)}
