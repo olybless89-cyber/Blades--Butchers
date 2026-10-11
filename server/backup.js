@@ -35,6 +35,10 @@ export function backupConfig() {
   return {
     s3,
     passphrase,
+    // "offsite": nightly encrypted copy to S3-compatible storage. "manual": Railway's own Postgres backups plus a
+    // weekly encrypted download by the Owner (each download is restore-checked before it's handed over).
+    mode: s3 ? "offsite" : "manual",
+    passphraseOk: !!(passphrase && passphrase.length >= 12),
     retentionDays: Math.max(7, Number(e.BACKUP_RETENTION_DAYS) || 35),
     // Off-site copies must be encrypted: without a passphrase the scheduler won't upload.
     ready: !!(s3 && passphrase && passphrase.length >= 12),

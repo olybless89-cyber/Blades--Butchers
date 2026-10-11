@@ -8,7 +8,7 @@ import { query, tx } from "./db.js";
 import { requirePerm } from "./auth.js";
 import { addStock } from "./stock.js";
 import { approvalLimits } from "./operations.js";
-import { backupConfig, runBackup, runRestoreTest, dumpDatabase, encrypt } from "./backup.js";
+import { backupConfig, runBackup, runRestoreTest, dumpDatabase, encrypt, restoreIntoScratch, sha256 } from "./backup.js";
 import { can, UNLIMITED_APPROVER, PO_OVER_RECEIPT_PCT, PO_MATCH_TOLERANCE_PCT, RECON_METHODS } from "../src/shared/permissions.js";
 import { ah, parse, audit, bad, notFound, conflict, HttpError, round3, fmtDate, fmtDateTime } from "./util.js";
 
@@ -113,16 +113,38 @@ export function businessRoutes(r) {
     }
   }));
 
-  /** Owner only: a full copy to keep somewhere safe. Encrypted when BACKUP_PASSPHRASE is set. */
+  /**
+   * Owner only: a full copy to keep somewhere safe (the weekly backup when there's no off-site storage).
+   * Encrypted when BACKUP_PASSPHRASE is set. Before it's handed over, the exact file is restore-tested into a
+   * throw-away schema (every table's rows and every link checked) — a copy that fails is never given out.
+   */
   r.get("/backups/download", requirePerm("backups.download"), ah(async (req, res) => {
     const cfg = backupConfig();
     const dump = await dumpDatabase();
     const file = cfg.passphrase ? encrypt(dump.gz, cfg.passphrase) : dump.gz;
-    await query(`INSERT INTO backups (kind, status, storage, bytes, tables, rows, encrypted, user_id, finished_at)
-                 VALUES ('manual', 'Succeeded', 'download', $1, $2, $3, $4, $5, now())`, [file.length, dump.tables, dump.rows, !!cfg.passphrase, req.user.id]);
-    await audit(null, req.user.id, "Downloaded a full backup", `${dump.rows.toLocaleString("en-NG")} rows · ${cfg.passphrase ? "encrypted" : "NOT encrypted"}`);
+    const hash = sha256(file);
+    const b = (await query(`INSERT INTO backups (kind, status, storage, bytes, sha256, tables, rows, encrypted, user_id)
+                 VALUES ('manual', 'Running', 'download', $1, $2, $3, $4, $5, $6) RETURNING id`, [file.length, hash, dump.tables, dump.rows, !!cfg.passphrase, req.user.id])).rows[0];
+    const t = (await query("INSERT INTO restore_tests (backup_id, user_id) VALUES ($1, $2) RETURNING id", [b.id, req.user.id])).rows[0];
+    let check;
+    try {
+      check = await restoreIntoScratch(file, cfg.passphrase);
+      if (check.rows !== dump.rows) check.detail.problems.push(`restored ${check.rows} rows; the copy recorded ${dump.rows}`);
+    } catch (e) {
+      check = { tables: 0, rows: 0, detail: { problems: [e.message] } };
+    }
+    const ok = check.detail.problems.length === 0;
+    await query(`UPDATE restore_tests SET status = $2, tables = $3, rows = $4, detail = $5, error = $6, finished_at = now() WHERE id = $1`,
+      [t.id, ok ? "Passed" : "Failed", check.tables, check.rows, JSON.stringify(check.detail), ok ? null : check.detail.problems.slice(0, 5).join("; ")]);
+    await query("UPDATE backups SET status = $2, error = $3, finished_at = now() WHERE id = $1", [b.id, ok ? "Succeeded" : "Failed", ok ? null : "Failed its restore check"]);
+    if (!ok) {
+      await audit(null, req.user.id, "Backup download FAILED its restore check", check.detail.problems.slice(0, 3).join("; "));
+      throw new HttpError(500, `This backup failed its check and wasn't downloaded: ${check.detail.problems[0]}`);
+    }
+    await audit(null, req.user.id, "Downloaded a full backup", `${dump.rows.toLocaleString("en-NG")} rows · ${cfg.passphrase ? "encrypted" : "NOT encrypted"} · restore-checked · sha256 ${hash.slice(0, 12)}`);
     const name = `bladeos-${new Date(Date.now() + 3600e3).toISOString().slice(0, 16).replace(/[T:]/g, "-")}.bdb${cfg.passphrase ? "" : ".gz"}`;
-    res.set({ "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename="${name}"`, "Cache-Control": "no-store" });
+    res.set({ "Content-Type": "application/octet-stream", "Content-Disposition": `attachment; filename="${name}"`, "Cache-Control": "no-store", "X-Backup-SHA256": hash,
+      "Access-Control-Expose-Headers": "Content-Disposition, X-Backup-SHA256" });
     res.send(file);
   }));
 
@@ -426,6 +448,9 @@ export function businessRoutes(r) {
 }
 
 /* ================================================================== state */
+/** Without off-site storage, the Owner downloads a checked, encrypted copy at least this often. */
+const WEEKLY_DAYS = 7;
+
 export async function backupsState() {
   const cfg = backupConfig();
   const [recent, tests] = await Promise.all([
@@ -435,7 +460,12 @@ export async function backupsState() {
   const lastOk = recent.rows.find((b) => b.status === "Succeeded" && b.storage === "s3")
     ?? (await query("SELECT * FROM backups WHERE status = 'Succeeded' AND storage = 's3' ORDER BY started_at DESC LIMIT 1")).rows[0];
   const host = cfg.s3 ? (() => { try { return new URL(cfg.s3.endpoint).host; } catch { return cfg.s3.endpoint; } })() : null;
+  const dl = (await query(`SELECT b.started_at, b.rows, b.bytes, b.encrypted, b.sha256, u.name AS who FROM backups b LEFT JOIN users u ON u.id = b.user_id
+                           WHERE b.storage = 'download' AND b.status = 'Succeeded' ORDER BY b.started_at DESC LIMIT 1`)).rows[0];
   return {
+    mode: cfg.mode, passphraseOk: cfg.passphraseOk, weeklyDays: WEEKLY_DAYS,
+    lastDownload: dl ? { at: fmtDateTime(dl.started_at), daysAgo: Math.floor((Date.now() - new Date(dl.started_at).getTime()) / 864e5), who: dl.who,
+      rows: dl.rows, bytes: dl.bytes, encrypted: dl.encrypted, fingerprint: dl.sha256?.slice(0, 12) } : null,
     ready: cfg.ready, problem: cfg.problem, encrypted: !!cfg.passphrase, retentionDays: cfg.retentionDays,
     destination: cfg.s3 ? `${host}/${cfg.s3.bucket}/${cfg.s3.prefix}` : null,
     lastSuccess: lastOk ? { at: fmtDateTime(lastOk.started_at), hoursAgo: Math.round((Date.now() - new Date(lastOk.started_at).getTime()) / 3600e3), rows: lastOk.rows, bytes: lastOk.bytes } : null,
@@ -517,7 +547,18 @@ export async function businessNotifications(user) {
   const roles = user.roles, out = [];
   if (can(roles, "backups.manage")) {
     const cfg = backupConfig();
-    if (!cfg.ready) out.push({ icon: "AlertTriangle", tone: "danger", route: "admin", text: `Automatic off-site backups are off — ${cfg.problem}` });
+    if (cfg.mode === "manual") {
+      if (!cfg.passphraseOk) out.push({ icon: "AlertTriangle", tone: "danger", route: "admin", text: "Set BACKUP_PASSPHRASE (12+ characters) on Railway so the weekly backup file is encrypted." });
+      const last = (await query("SELECT max(started_at) AS at FROM backups WHERE storage = 'download' AND status = 'Succeeded'")).rows[0].at;
+      const days = last ? (Date.now() - new Date(last).getTime()) / 864e5 : null;
+      const owner = can(roles, "backups.download");
+      if (days == null || days >= WEEKLY_DAYS) {
+        const late = days == null || days >= WEEKLY_DAYS * 2;
+        if (owner || late) out.push({ icon: "AlertTriangle", tone: late ? "danger" : "warn", route: "admin",
+          text: (days == null ? "No backup has been downloaded yet" : `Weekly backup is due — last downloaded ${Math.floor(days)} days ago`)
+            + (owner ? ". Administration → Backups → Download weekly backup." : ". Ask the Owner to download it.") });
+      }
+    } else if (!cfg.ready) out.push({ icon: "AlertTriangle", tone: "danger", route: "admin", text: `Automatic off-site backups are off — ${cfg.problem}` });
     else {
       const last = (await query("SELECT max(started_at) AS at FROM backups WHERE status = 'Succeeded' AND storage = 's3'")).rows[0].at;
       const hrs = last ? (Date.now() - new Date(last).getTime()) / 3600e3 : null;

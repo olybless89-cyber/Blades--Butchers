@@ -7,7 +7,7 @@ import { buildState } from "./state.js";
 import { addStock, allocateStock, transferStock, returnAllocations } from "./stock.js";
 import { openTill, operationRoutes } from "./operations.js";
 import { businessRoutes } from "./business.js";
-import { posRoutes, recordPayment, businessProfile } from "./pos.js";
+import { posRoutes, recordPayment } from "./pos.js";
 import { ROLES, LEADERSHIP_ROLES, COMBINABLE_ROLES, ORDER_FLOW, can, PROCESSING_SKUS, CONTENT_STATUSES } from "../src/shared/permissions.js";
 import { ah, parse, audit, bad, notFound, conflict, HttpError, round2, round3, fmtDateTime } from "./util.js";
 
@@ -35,12 +35,6 @@ export function apiRouter() {
     res.set("Cache-Control", "no-store");
     next();
   });
-
-  /** For the home page and privacy notice: the details already printed on every receipt, nothing more. */
-  r.get("/public/profile", ah(async (_req, res) => {
-    const p = await businessProfile();
-    res.set("Cache-Control", "public, max-age=300").json({ name: p.name, tagline: p.tagline, address: p.address, phone: p.phone, email: p.email });
-  }));
 
   r.use(loadUser);
   r.use(requirePasswordChange);

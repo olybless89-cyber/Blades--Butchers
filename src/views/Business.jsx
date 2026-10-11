@@ -632,10 +632,28 @@ function ChecklistEditor({ checklists, actions, onClose }) {
 }
 
 /* ============================================================ BACKUPS (Administration) */
+/** Fetch the checked backup file and save it — errors show as a message instead of a broken download. */
+async function downloadBackup(actions) {
+  try {
+    const r = await fetch("/api/backups/download", { credentials: "same-origin" });
+    if (!r.ok) { const e = await r.json().catch(() => ({})); actions.notify(e.error || "The backup couldn't be made.", "error"); return; }
+    const name = /filename="([^"]+)"/.exec(r.headers.get("content-disposition") || "")?.[1] || "bladeos-backup.bdb";
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement("a");
+    a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    actions.notify(`Backup checked and saved as ${name} — keep it in two places`);
+    await actions.refresh();
+  } catch {
+    actions.notify("The backup needs the internet — try again when you're online.", "error");
+  }
+}
+
 export function BackupsCard({ data, actions, permit }) {
   const b = data.backups;
   const [busy, setBusy] = useState(null);
   if (!b) return null;
+  if (b.mode === "manual") return <ManualBackupsCard b={b} actions={actions} permit={permit} />;
   const go = async (kind) => { setBusy(kind); await (kind === "run" ? actions.runBackup() : actions.testRestore()); setBusy(null); };
   const lastTest = b.tests[0];
   const kb = (n) => (n == null ? "—" : n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
@@ -649,8 +667,7 @@ export function BackupsCard({ data, actions, permit }) {
         <div className="flex flex-wrap gap-1.5">
           {permit("backups.manage") && b.ready && <Btn small icon={DatabaseBackup} busy={busy === "run"} disabled={!!busy} onClick={() => go("run")}>Back up now</Btn>}
           {permit("backups.manage") && b.ready && <Btn small variant="ghost" icon={FlaskConical} busy={busy === "test"} disabled={!!busy || !b.lastSuccess} onClick={() => go("test")}>Run restore test</Btn>}
-          {permit("backups.download") && <a href="/api/backups/download" download className="f-body inline-flex items-center gap-1.5 rounded-lg font-semibold px-3 py-1.5 text-xs"
-            style={{ border: `1px solid ${C.input}`, color: C.ink }}><HardDriveDownload size={13} />Download a copy</a>}
+          {permit("backups.download") && <Btn small variant="ghost" icon={HardDriveDownload} busy={busy === "dl"} disabled={!!busy} onClick={async () => { setBusy("dl"); await downloadBackup(actions); setBusy(null); }}>Download a copy</Btn>}
         </div>
       </div>
       {!b.ready ? (
@@ -686,6 +703,60 @@ export function BackupsCard({ data, actions, permit }) {
           {b.recent.slice(0, 5).map((x) => (
             <div key={x.id} className="flex items-center justify-between gap-2 f-body text-xs">
               <span className="min-w-0 truncate" style={{ color: C.ink }}>{x.at} · {x.storage === "download" ? `downloaded by ${x.who}` : `${x.kind}${x.kind === "manual" ? ` by ${x.who}` : ""}`}{x.error ? <span style={{ color: C.danger }}> · {x.error}</span> : ""}</span>
+              <StatusPill status={x.status} />
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/** Railway's own Postgres backups + a weekly, restore-checked, encrypted download kept outside Railway by the Owner. */
+function ManualBackupsCard({ b, actions, permit }) {
+  const [busy, setBusy] = useState(false);
+  const kb = (n) => (n == null ? "—" : n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+  const d = b.lastDownload;
+  const due = !d || d.daysAgo >= b.weeklyDays;
+  const tile = (label, children) => (
+    <div className="rounded-xl p-3" style={{ background: C.cream }}>
+      <div className="f-body text-[10px] uppercase" style={{ color: C.muted }}>{label}</div>
+      {children}
+    </div>
+  );
+  return (
+    <Card className="mb-6">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+        <div className="flex items-center gap-2.5">
+          <DatabaseBackup size={18} style={{ color: C.burgundy }} />
+          <h3 className="f-display text-base" style={{ color: C.ink }}>Backups</h3>
+        </div>
+        {permit("backups.download") && (
+          <Btn small icon={HardDriveDownload} busy={busy} onClick={async () => { setBusy(true); await downloadBackup(actions); setBusy(false); }}>Download weekly backup</Btn>
+        )}
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
+        {tile("1 · Railway backups", <>
+          <div className="f-body text-sm font-semibold" style={{ color: C.ink }}>Set in Railway</div>
+          <div className="f-body text-[11px]" style={{ color: C.muted }}>Railway → Postgres service → Backups: daily schedule on. Covers mistakes and bad updates.</div>
+        </>)}
+        {tile("2 · Weekly copy outside Railway", <>
+          <div className="f-body text-sm font-semibold" style={{ color: due ? C.danger : C.ink }}>{d ? `${d.at}${due ? " — due now" : ""}` : "None yet — due now"}</div>
+          {d && <div className="f-body text-[11px]" style={{ color: C.muted }}>by {d.who} · {d.rows?.toLocaleString("en-NG")} rows · {kb(d.bytes)} · restore-checked · fingerprint {d.fingerprint}</div>}
+        </>)}
+        {tile("Encryption", <>
+          <div className="f-body text-sm font-semibold" style={{ color: b.passphraseOk ? C.ink : C.danger }}>{b.passphraseOk ? "On (AES-256)" : "Off — set BACKUP_PASSPHRASE"}</div>
+          <div className="f-body text-[11px]" style={{ color: C.muted }}>{b.passphraseOk ? "Files can only be opened with the passphrase. Keep it written down safely, outside Railway." : "Add BACKUP_PASSPHRASE (12+ characters) in Railway → Variables, so the file is useless to anyone who finds it."}</div>
+        </>)}
+      </div>
+      <p className="f-body text-[11px] mb-2" style={{ color: C.muted }}>
+        Every Monday the Owner downloads a copy. Each file is test-restored before you get it. Keep it in two places, e.g. the office laptop and Google Drive, and keep the last 8.
+      </p>
+      {b.recent.filter((x) => x.storage === "download").length > 0 && (
+        <div className="space-y-1">
+          {b.recent.filter((x) => x.storage === "download").slice(0, 5).map((x) => (
+            <div key={x.id} className="flex items-center justify-between gap-2 f-body text-xs">
+              <span className="min-w-0 truncate" style={{ color: C.ink }}>{x.at} · downloaded by {x.who}{x.error ? <span style={{ color: C.danger }}> · {x.error}</span> : ""}</span>
               <StatusPill status={x.status} />
             </div>
           ))}

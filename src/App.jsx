@@ -19,7 +19,6 @@ import { MarketingView } from "./views/Marketing.jsx";
 import { SetupView } from "./views/Setup.jsx";
 import { ApprovalsView } from "./views/Approvals.jsx";
 import { MfaStep, MfaEnrol, SessionsPanel } from "./views/Security.jsx";
-import { HomePage } from "./views/Home.jsx";
 import { PurchasesView, PaymentsView, FoodSafetyView } from "./views/Business.jsx";
 import { ScaleProvider } from "./lib/scale.jsx";
 import { OfflineSignIn, OfflineLock, OfflineBanner, SyncModal, OfflinePinModal, UpdateBanner } from "./views/Offline.jsx";
@@ -77,7 +76,6 @@ export default function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pwOpen, setPwOpen] = useState(false);
   const [sessOpen, setSessOpen] = useState(false);
-  const [atHome, setAtHome] = useState(showHomeFirst);
   const [mfaOpen, setMfaOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const [reportTab, setReportTab] = useState(null);
@@ -384,8 +382,7 @@ export default function App() {
       onSignedIn={async (snap) => { setOfflineGate(false); setOfflineSession(true); setData(await withPending(snap.state, snap.user.id)); setUser(snap.user); setRoute(null); }}
       onTryOnline={async () => { try { const r = await api("/auth/me"); await setOnline(true); setOfflineGate(false); setUser(r.user); } catch (e) { if (e.status !== 0) { await setOnline(true); setOfflineGate(false); } } }} />
   );
-  if (!user && atHome && !sync.pending) return <HomePage onSignIn={() => { setAtHome(false); window.scrollTo(0, 0); }} />;
-  if (!user) return (<>{toast && <Toast toast={toast} onDone={() => setToast(null)} />}<LoginScreen pending={sync.pending} onLogin={(u) => { setUser(u); setRoute(null); setAtHome(false); }} onHome={isTill() ? null : () => setAtHome(true)} /></>);
+  if (!user) return (<>{toast && <Toast toast={toast} onDone={() => setToast(null)} />}<LoginScreen pending={sync.pending} onLogin={(u) => { setUser(u); setRoute(null); }} /></>);
   if (!user.mustChangePassword && user.mfaSetupRequired) return (
     <div className="min-h-screen flex items-center justify-center px-4 py-8" style={{ background: C.charcoal }}>
       <div className="w-full max-w-md rounded-2xl p-6" style={{ background: "#fff" }}>
@@ -503,19 +500,8 @@ function Splash({ error, onRetry, onLogout }) {
   );
 }
 
-/** Tills and the installed app open straight on sign-in; an ordinary browser tab shows the home page first. */
-function isTill() {
-  try {
-    if (window.matchMedia?.("(display-mode: standalone)").matches || window.matchMedia?.("(display-mode: window-controls-overlay)").matches) return true;
-    if (JSON.parse(localStorage.getItem("bladeos.devices") || "{}").tillNo) return true;
-  } catch { /* storage blocked: treat as a normal browser */ }
-  return false;
-}
-function showHomeFirst() {
-  return !isTill() && !window.location.hash;
-}
-
-function LoginScreen({ onLogin, pending = 0, onHome }) {
+function LoginScreen({ onLogin, pending = 0 }) {
+  const [privacy, setPrivacy] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
@@ -568,7 +554,17 @@ function LoginScreen({ onLogin, pending = 0, onHome }) {
           </button>
           <p className="f-body text-xs text-center mt-4" style={{ color: C.mutedLight }}>Forgot your password? Ask your administrator to reset it.</p>
         </form>)}
-        {onHome && <button onClick={onHome} className="f-body text-xs mt-6 mx-auto block hover:underline" style={{ color: C.mutedLight }}>← About BladeOS</button>}
+        <button onClick={() => setPrivacy(true)} className="f-body text-xs mt-6 mx-auto block hover:underline" style={{ color: C.mutedLight }}>Privacy notice</button>
+        {privacy && (
+          <Modal title="Privacy notice" onClose={() => setPrivacy(false)}>
+            <div className="f-body text-sm space-y-3" style={{ color: C.ink }}>
+              <p>BladeOS is the internal operations system of Blades &amp; Butchers, for authorised staff only. Use is recorded.</p>
+              <p><b>Staff:</b> your name, work email, role, sign-ins and the actions you take are recorded for security, cash and stock control, and the audit trail.</p>
+              <p><b>Customers:</b> name, phone, delivery area and purchases are kept only to take and deliver orders, issue receipts and refunds, and trace a batch if food safety requires it. Marketing messages go only to customers who agreed. Card numbers are never stored.</p>
+              <p>Sales records are kept for six years for tax. Customers can ask to see, correct or erase their details, and staff can ask the Owner. This follows the Nigeria Data Protection Act 2023.</p>
+            </div>
+          </Modal>
+        )}
         <p className="f-body text-center text-xs mt-6" style={{ color: C.mutedLight }}>Digital Web Oracle ICT · Abuja, Nigeria</p>
       </div>
     </div>

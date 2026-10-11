@@ -19,15 +19,14 @@ One Railway service serves both the API (`/api`) and the app.
 | `ADMIN_PASSWORD` | 8+ characters — temporary: BladeOS makes the Owner choose a new one at first sign-in |
 | `ADMIN_NAME` | e.g. `Jeffrey` |
 
-Off-site backups (strongly recommended — see *Backups* below):
+Backups (see *Backups* below):
 
 | Variable | Value |
 |---|---|
-| `BACKUP_S3_ENDPOINT` | e.g. `https://<account-id>.r2.cloudflarestorage.com` (Cloudflare R2) |
-| `BACKUP_S3_BUCKET` | a private bucket, e.g. `bladeos-backups` |
-| `BACKUP_S3_REGION` | `auto` for R2; the bucket's region elsewhere |
-| `BACKUP_S3_ACCESS_KEY` / `BACKUP_S3_SECRET_KEY` | an API token limited to that bucket (read + write) |
-| `BACKUP_PASSPHRASE` | 12+ characters — **keep a copy outside Railway** |
+| `BACKUP_PASSPHRASE` | 12+ characters — encrypts the weekly backup file. **Keep a copy outside Railway** |
+
+Optional, only for automatic nightly off-site copies: `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET`, `BACKUP_S3_REGION`,
+`BACKUP_S3_ACCESS_KEY`, `BACKUP_S3_SECRET_KEY` (any S3-compatible storage, e.g. Cloudflare R2).
 
 Do **not** set `NODE_ENV` — the start script sets it, and setting it at build time skips Vite.
 
@@ -172,9 +171,9 @@ src/      App.jsx (shell) · views/ (Home.jsx = the home page) · components/ ·
 
 ## Security, privacy and accessibility
 
-- **Home page:** an ordinary browser opens on the BladeOS home page (what the system does, staff help, privacy notice);
-  *Sign in* goes to the sign-in form. Tills (a till number set under *Devices*), the installed app and shortcut links open
-  straight on sign-in. The page shows no business data — only the name, address, phone and email from *Business Setup*.
+- **Sign-in only:** BladeOS is internal, so nothing about the business, its controls or its set-up is shown before
+  signing in — just the sign-in form and a short *Privacy notice* (staff and customer data, NDPA 2023). The customer-facing
+  privacy notice belongs on the public Blades & Butchers website and at the counter.
 - **Sessions:** every sign-in is recorded server-side. Signing out ends it for real; changing a password signs you out
   everywhere else; a password reset, role change, two-step reset or deactivation by an administrator ends all of that
   person's sessions at once. *Account menu → Signed-in devices* lists them and can sign out every other device.
@@ -189,17 +188,22 @@ src/      App.jsx (shell) · views/ (Home.jsx = the home page) · components/ ·
   withdrawn from their profile; *Download their data* gives them everything held; the Owner or MD can *Erase personal data*
   (name, phone, area, order notes) — the sales stay in the accounts as "Erased customer". Card numbers are never stored.
 - **Accessibility:** every main screen passes an automated WCAG 2.1 AA scan (axe-core) — colour contrast, labels on
-  icon-only buttons, one heading structure, skip link on the home page.
+  icon-only buttons, heading structure.
 
 ## Operations
-- **Backups:** with the `BACKUP_*` variables set, BladeOS makes a consistent copy of every table each night after 02:00 Lagos
-  time, encrypts it (AES-256-GCM, key from `BACKUP_PASSPHRASE`), uploads it, downloads it again to check the fingerprint, and
-  deletes copies older than `BACKUP_RETENTION_DAYS` (always keeping the newest 7). Once a month it **restore-tests** the newest
-  copy: loads it into a throw-away schema, checks every table's row count and every foreign-key link, then drops it.
-  *Administration → Backups* shows the status, with *Back up now* and *Run restore test*; the Owner can also download a copy.
-  Alerts appear if there's no good backup for 36 hours or a restore test fails. Also turn on Railway's own Postgres backups.
+- **Backups (chosen set-up: Railway + weekly download):**
+  1. *Railway's own Postgres backups* — Railway → Postgres service → **Backups**: turn on the daily schedule. Covers
+     mistakes, bad updates and accidental deletion.
+  2. *A weekly copy outside Railway* — every Monday the Owner opens *Administration → Backups → Download weekly backup*.
+     BladeOS makes a consistent copy of every table, encrypts it (AES-256-GCM, key from `BACKUP_PASSPHRASE`, 12+
+     characters), **restore-tests that exact file** in a throw-away schema (every row and link checked), and only then
+     hands it over, with its fingerprint (sha256) recorded in the audit trail. Keep each file in two places (office laptop +
+     Google Drive) and keep the last 8. A reminder appears for the Owner after 7 days, and for Administrators after 14.
+  Set only `BACKUP_PASSPHRASE` on Railway, and keep it written down somewhere safe outside Railway — without it the
+  files can't be opened. (Optional later: add the `BACKUP_S3_*` variables to switch to automatic nightly off-site copies
+  with monthly restore tests — the screen changes to *Back up now / Run restore test*.)
 - **Restoring:** `railway run node server/restore.js --latest` shows what it would restore; add `--yes` to replace all data
-  (`--list` lists copies, `--key=<name>` picks one, or pass a downloaded `.bdb` file). Restore into a new Postgres service
+  (`--list` lists copies, `--key=<name>` picks one, or pass a downloaded weekly `.bdb` file — the usual case). Restore into a new Postgres service
   first if you want to inspect before switching over. Keep the same `JWT_SECRET`, or everyone re-enrols two-step sign-in.
 - **Schema changes:** add `migrations/002_*.sql`; it runs automatically on next deploy.
 - **Forgotten password / lost phone:** an Owner/Administrator resets it under *Administration → Staff Accounts*
@@ -208,4 +212,4 @@ src/      App.jsx (shell) · views/ (Home.jsx = the home page) · components/ ·
   day; reconcile yesterday's transfers and card takings to the bank and terminal; receive deliveries against purchase orders;
   closing clean-down; close tills and sign off cash-ups; write off anything past its use-by date.
   **Weekly:** blind count per location, pest-control and equipment checklists, verify the week's food-safety records.
-  **Monthly:** glance at *Administration → Backups* — the restore test should say *Passed*.
+  **Weekly (Monday):** Owner downloads the weekly backup and files it in two places.
