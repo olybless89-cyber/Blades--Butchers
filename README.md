@@ -78,7 +78,12 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
   - *Batches & use-by:* every unit of stock belongs to a lot (processing batch, supplier delivery). Sales take the counter
     first, then the earliest use-by date; expired stock can't be sold. *Trace Batch* lists where a batch is and every
     customer who bought it, with a recall CSV. Shelf life per product in Business Setup.
-  - *Till cash-up:* sales need an open till (float counted in). Cash taken and cash refunds are tracked to the drawer.
+  - *No till to open:* cashiers sign in and sell; managers set nothing up. The first sale records a till session for that
+    cashier behind the scenes (no float — change money stays outside the system). At closing the cashier taps **End day**
+    and counts the cash taken (a blind count); the system compares it with their cash sales less cash refunds.
+    Cashier-only accounts get a full-screen POS (menu behind ☰).
+  - *Cashier Sales* (managers, under Sales): each cashier's sales for any day — number of sales, net, cash / transfer /
+    card, unpaid, refunds and their End day result — with totals, CSV export and print.
     Closing is a blind count; a different manager signs off, with an explanation for any variance.
     Delivery Managers use the same flow as a cash bag for cash on delivery.
   - *Cold chain:* safe range per location; readings out of range need a corrective action; alerts for breaches and
@@ -208,7 +213,7 @@ src/      App.jsx (shell) · views/ (Home.jsx = the home page) · components/ ·
 - **Schema changes:** add `migrations/002_*.sql`; it runs automatically on next deploy.
 - **Forgotten password / lost phone:** an Owner/Administrator resets it under *Administration → Staff Accounts*
   (Administrators can't reset leadership accounts — only the Owner can).
-- **Daily routine:** managers set a till approval PIN once (account menu); opening checks before trading; open tills with a float; log cold-room and freezer temperatures twice a
+- **Daily routine:** managers set a till approval PIN once (account menu); opening checks before trading;  log cold-room and freezer temperatures twice a
   day; reconcile yesterday's transfers and card takings to the bank and terminal; receive deliveries against purchase orders;
   closing clean-down; close tills and sign off cash-ups; write off anything past its use-by date.
   **Weekly:** blind count per location, pest-control and equipment checklists, verify the week's food-safety records.

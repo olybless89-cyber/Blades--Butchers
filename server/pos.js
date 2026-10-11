@@ -20,6 +20,21 @@ const METHODS = ["Cash", "Transfer", "POS Card"];
 const PIN_MAX_FAILS = 5;
 
 export const DEFAULT_PROFILE = { name: "Blades & Butchers", tagline: "From Ranch to Retail", address: "", phone: "", email: "", tin: "", receiptFooter: "Thank you for shopping with us!", scaleLabel: "weight" };
+/**
+ * Cashiers never open a till and managers set nothing up: the first sale records a till session for that cashier behind the
+ * scenes (no float — change money stays outside the system). End day is a blind count of the cash taken.
+ */
+export async function autoOpenTill(db, userId, at = null) {
+  await db.query("SELECT pg_advisory_xact_lock(7710, $1)", [userId]); // two first sales at once can't open two tills
+  const cur = await openTill(db, userId);
+  if (cur) return cur;
+  const n = (await db.query("SELECT nextval('till_code_seq') AS n")).rows[0].n;
+  const t = (await db.query("INSERT INTO till_sessions (code, user_id, opening_float, opened_at) VALUES ($1, $2, $3, COALESCE($4::timestamptz, now())) RETURNING *",
+    [`TILL-${n}`, userId, 0, at])).rows[0];
+  await audit(db, userId, `Started selling (${t.code})`, "first sale of the day");
+  return t;
+}
+
 export async function businessProfile(db = { query }) {
   const r = (await db.query("SELECT value FROM settings WHERE key = 'business_profile'")).rows[0];
   return { ...DEFAULT_PROFILE, ...(r?.value || {}) };
@@ -87,14 +102,14 @@ export async function saveSale(seller, b, off) {
   const out = await tx(async (db) => {
     let till = null;
     if (!off) {
-      till = await openTill(db, seller.id);
-      if (!till) throw conflict("Open your till before selling.");
+      till = await autoOpenTill(db, seller.id);
     } else {
       // The seller's till session that was open when the sale was made.
       till = (off.tillCode && (await db.query("SELECT * FROM till_sessions WHERE code = $1 AND user_id = $2", [off.tillCode, seller.id])).rows[0])
         || (await db.query(`SELECT * FROM till_sessions WHERE user_id = $1 AND opened_at <= $2 AND (closed_at IS NULL OR closed_at >= $2)
                             ORDER BY opened_at DESC LIMIT 1`, [seller.id, off.soldAt])).rows[0] || null;
-      if (!till) flags.push("no till session was open — cash isn't in any cash-up");
+      // None covering the sale: it goes into the till open now, or opens one from the time of the sale.
+      if (!till) till = await autoOpenTill(db, seller.id, off.soldAt);
       else if (till.status !== "Open") flags.push(`till ${till.code} was already closed when this was uploaded — its cash-up didn't include this sale`);
     }
     let customer = null;

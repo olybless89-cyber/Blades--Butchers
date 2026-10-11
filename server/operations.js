@@ -78,6 +78,56 @@ export function operationRoutes(r) {
     res.json(out);
   }));
 
+  /**
+   * Daily sales by cashier (managers): what each person sold on a day, how they were paid, refunds against their sales,
+   * and their End day count. Sales are counted by the day they were made (Lagos time), whatever the till session.
+   */
+  r.get("/reports/cashiers", requirePerm("till.review"), ah(async (req, res) => {
+    if (req.query.day && !/^\d{4}-\d{2}-\d{2}$/.test(String(req.query.day))) throw bad("Pick a valid day.");
+    const day = req.query.day ? String(req.query.day) : new Date(Date.now() + 3600e3).toISOString().slice(0, 10);
+    const LD = (col) => `(${col} AT TIME ZONE 'Africa/Lagos')::date`;
+    const [sales, pays, refunds, tills] = await Promise.all([
+      query(`SELECT o.user_id, count(*)::int AS n, COALESCE(sum(o.gross_total), 0) AS gross, COALESCE(sum(o.discount_total), 0) AS discounts,
+               COALESCE(sum(o.total), 0) AS net, COALESCE(sum(o.total) FILTER (WHERE o.payment_status = 'Pending'), 0) AS unpaid,
+               min(o.created_at) AS first, max(o.created_at) AS last
+             FROM orders o WHERE o.status <> 'Cancelled' AND ${LD("o.created_at")} = $1 GROUP BY o.user_id`, [day]),
+      query(`SELECT p.user_id, p.method, COALESCE(sum(p.amount), 0) AS amount FROM order_payments p JOIN orders o ON o.id = p.order_id
+             WHERE o.status <> 'Cancelled' AND ${LD("p.paid_at")} = $1 GROUP BY p.user_id, p.method`, [day]),
+      query(`SELECT o.user_id, count(*)::int AS n, COALESCE(sum(f.amount), 0) AS amount FROM refunds f JOIN orders o ON o.id = f.order_id
+             WHERE f.status = 'Approved' AND ${LD("f.decided_at")} = $1 GROUP BY o.user_id`, [day]),
+      query(`SELECT t.user_id, t.code, t.status, t.counted_cash, t.expected_cash, t.variance, t.closed_at, rv.name AS reviewer
+             FROM till_sessions t LEFT JOIN users rv ON rv.id = t.reviewed_by
+             WHERE ${LD("t.opened_at")} = $1 OR (t.closed_at IS NOT NULL AND ${LD("t.closed_at")} = $1) OR t.status = 'Open'
+             ORDER BY t.opened_at`, [day]),
+    ]);
+    const ids = [...new Set([...sales.rows, ...pays.rows, ...refunds.rows, ...tills.rows.filter((t) => t.status !== "Open" || sales.rows.some((s) => s.user_id === t.user_id))].map((r) => r.user_id))];
+    const names = ids.length ? Object.fromEntries((await query("SELECT id, name FROM users WHERE id = ANY($1)", [ids])).rows.map((u) => [u.id, u.name])) : {};
+    const rows = ids.map((id) => {
+      const s = sales.rows.find((x) => x.user_id === id) || { n: 0, gross: 0, discounts: 0, net: 0, unpaid: 0 };
+      const by = (m) => pays.rows.filter((x) => x.user_id === id && x.method === m).reduce((t, x) => t + x.amount, 0);
+      const ts = tills.rows.filter((t) => t.user_id === id);
+      const closed = ts.filter((t) => t.status !== "Open");
+      const open = ts.find((t) => t.status === "Open");
+      return {
+        id, name: names[id] ?? "—", sales: s.n, gross: s.gross, discounts: s.discounts, net: s.net, unpaid: s.unpaid,
+        cash: by("Cash"), transfer: by("Transfer"), card: by("POS Card"),
+        refunds: refunds.rows.find((x) => x.user_id === id)?.amount ?? 0,
+        first: s.first ? fmtDateTime(s.first) : null, last: s.last ? fmtDateTime(s.last) : null,
+        endDay: closed.length ? {
+          status: closed.every((t) => t.status === "Reviewed") ? "Signed off" : "Ended",
+          counted: closed.reduce((t, x) => t + (x.counted_cash ?? 0), 0), expected: closed.reduce((t, x) => t + (x.expected_cash ?? 0), 0),
+          variance: closed.reduce((t, x) => t + (x.variance ?? 0), 0), reviewer: closed.map((t) => t.reviewer).filter(Boolean).join(", ") || null,
+          codes: closed.map((t) => t.code),
+        } : null,
+        stillSelling: !!open,
+      };
+    }).filter((r) => r.sales || r.endDay || r.refunds || r.cash || r.transfer || r.card).sort((a, b) => b.net - a.net);
+    const sum = (k) => rows.reduce((t, r) => t + (r[k] || 0), 0);
+    res.json({ day, rows, totals: { sales: sum("sales"), gross: sum("gross"), discounts: sum("discounts"), net: sum("net"), unpaid: sum("unpaid"),
+      cash: sum("cash"), transfer: sum("transfer"), card: sum("card"), refunds: sum("refunds"),
+      variance: rows.reduce((t, r) => t + (r.endDay?.variance || 0), 0) } });
+  }));
+
   r.post("/till/:code/review", requirePerm("till.review"), ah(async (req, res) => {
     const b = parse(z.object({ note: z.string().trim().max(200).optional() }), req.body);
     const out = await tx(async (db) => {

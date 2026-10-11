@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Plus, X, Download, Phone, MapPin, Search, UserPlus, Check, ArrowRight, Printer, Ban, Loader2, ShoppingCart, Undo2, Wallet, Lock, FileText, Trash2, Megaphone } from "lucide-react";
 import { C, nairaFmt, qtyFmt, initials, exportCsv } from "../lib/theme.js";
+import { api } from "../lib/api.js";
 import { ORDER_FLOW, REFUND_REASONS, RESTOCK_REASON } from "../shared/permissions.js";
 import { SectionHeader, Btn, StatusPill, Modal, Field, Input, Select, Card, Table, Empty, useBusy } from "../components/ui.jsx";
 import { TillReportModal, printReceipt } from "./POS.jsx";
@@ -458,7 +459,7 @@ export function DeliveryView({ data, actions, permit }) {
 }
 
 /* ============================================================ TILL */
-export function TillBar({ till, actions, label = "till", canX = false }) {
+export function TillBar({ till, actions, label = "till", canX = false, standardFloat = 0 }) {
   const [float, setFloat] = useState("");
   const [closing, setClosing] = useState(false);
   const [report, setReport] = useState(null);
@@ -468,6 +469,13 @@ export function TillBar({ till, actions, label = "till", canX = false }) {
   const closeModal = (<>
     {closing && <CloseTillModal till={till || closing} label={label} actions={actions} onClose={() => setClosing(false)} onReport={(code) => { setClosing(false); setReport(code); }} />}
     {report && <TillReportModal code={report} actions={actions} onClose={() => setReport(null)} />}
+  </>);
+  // The shop till has nothing to open or set up: sales record against the cashier automatically. Only End day shows,
+  // once there's something to count (rendered as buttons in the POS header).
+  if (label === "till") return (<>
+    {closeModal}
+    {till && canX && <Btn small variant="ghost" icon={FileText} onClick={() => setReport(till.code)}>X report</Btn>}
+    {till && <span data-end-day><Btn small icon={Lock} onClick={() => setClosing(till)}>End day</Btn></span>}
   </>);
   if (!till) return (<>
     {closeModal}
@@ -528,13 +536,101 @@ function CloseTillModal({ till, label, actions, onClose, onReport }) {
     </Modal>
   );
   return (
-    <Modal title={`Close ${label} ${till.code}`} onClose={onClose}>
+    <Modal title={label === "till" ? "End day — count your cash" : `Close ${label} ${till.code}`} onClose={onClose}>
       <form onSubmit={submit} className="space-y-4">
-        <p className="f-body text-sm" style={{ color: C.ink }}>Count all the cash in the {label}, including the float, and enter the total. The system figure is shown only after you submit.</p>
+        <p className="f-body text-sm" style={{ color: C.ink }}>{label === "till"
+          ? "Count the cash you took from customers today (leave out any change money kept in the drawer) and enter the total. The system figure is shown only after you submit."
+          : `Count all the cash in the ${label}, including the float, and enter the total. The system figure is shown only after you submit.`}</p>
         <Field label="Cash counted (₦)"><Input mono type="number" min="0" step="1" value={counted} onChange={(e) => setCounted(e.target.value)} autoFocus /></Field>
         <Field label="Note (optional)"><Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={200} placeholder="e.g. ₦500 note torn, set aside" /></Field>
         <Btn type="submit" icon={Lock} full busy={busy} disabled={counted === "" || !Number.isInteger(Number(counted)) || Number(counted) < 0}>Close & Submit Count</Btn>
       </form>
     </Modal>
+  );
+}
+
+/* ============================================================ DAILY SALES BY CASHIER (managers) */
+const lagosToday = () => new Date(Date.now() + 3600e3).toISOString().slice(0, 10);
+export function CashierSalesView() {
+  const [day, setDay] = useState(lagosToday());
+  const [rep, setRep] = useState(null);
+  const [error, setError] = useState(null);
+  useEffect(() => {
+    let live = true;
+    setRep(null); setError(null);
+    api(`/reports/cashiers?day=${day}`).then((r) => live && setRep(r)).catch((e) => live && setError(e.message));
+    return () => { live = false; };
+  }, [day]);
+  const n = nairaFmt;
+  const endDay = (r) => {
+    if (!r.endDay) return <span style={{ color: r.stillSelling ? C.muted : C.danger }}>{r.stillSelling ? "Still selling" : "Not ended"}</span>;
+    const v = r.endDay.variance;
+    return (
+      <span>
+        <span className="font-semibold" style={{ color: v === 0 ? C.ok : C.danger }}>{v === 0 ? "Balanced" : `${n(Math.abs(v))} ${v > 0 ? "over" : "short"}`}</span>
+        <span className="block text-[11px]" style={{ color: C.muted }}>counted {n(r.endDay.counted)} · {r.endDay.status}{r.endDay.reviewer ? ` by ${r.endDay.reviewer}` : ""}</span>
+      </span>
+    );
+  };
+  const csv = () => rep && exportCsv(`cashier-sales-${rep.day}.csv`, rep.rows.map((r) => ({
+    Cashier: r.name, Sales: r.sales, Gross: r.gross, Discounts: r.discounts, Net: r.net, Cash: r.cash, Transfer: r.transfer, Card: r.card,
+    "Not yet paid": r.unpaid, Refunds: r.refunds, "Cash counted": r.endDay?.counted ?? "", "Cash expected": r.endDay?.expected ?? "",
+    Difference: r.endDay?.variance ?? "", "End day": r.endDay ? r.endDay.status : r.stillSelling ? "Still selling" : "Not ended",
+  })));
+  const t = rep?.totals;
+  return (
+    <div>
+      <SectionHeader eyebrow="Sales" title="Cashier Sales" action={<>
+        <Input type="date" value={day} max={lagosToday()} onChange={(e) => e.target.value && setDay(e.target.value)} aria-label="Day" />
+        <Btn small variant="ghost" icon={Download} disabled={!rep?.rows.length} onClick={csv}>CSV</Btn>
+        <Btn small variant="ghost" icon={Printer} disabled={!rep?.rows.length} onClick={() => window.print()}>Print</Btn>
+      </>} />
+      {error && <p className="f-body text-sm mb-3" style={{ color: C.danger }}>{error}</p>}
+      {!rep && !error && <p className="f-body text-sm" style={{ color: C.muted }}><Loader2 size={14} className="inline animate-spin mr-1" /> Loading…</p>}
+      {rep && (<>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+          {[["Net sales", n(t.net), `${t.sales} sale${t.sales === 1 ? "" : "s"}`], ["Cash", n(t.cash), null], ["Transfer", n(t.transfer), null], ["Card", n(t.card), null]].map(([l, v, sub]) => (
+            <div key={l} className="rounded-xl px-4 py-3 border" style={{ background: "#fff", borderColor: C.border }}>
+              <div className="f-body text-[10px] uppercase tracking-wide" style={{ color: C.muted }}>{l}</div>
+              <div className="f-mono text-lg font-semibold" style={{ color: C.ink }}>{v}</div>
+              {sub && <div className="f-body text-[11px]" style={{ color: C.muted }}>{sub}</div>}
+            </div>
+          ))}
+        </div>
+        <Card pad={false}>
+          <Table head={["Cashier", "Sales", "Net", "Cash", "Transfer", "Card", "Refunds", "End day"]} minWidth={860}
+            empty={rep.rows.length === 0 ? "No sales on this day." : null}>
+            {rep.rows.map((r) => (
+              <tr key={r.id} className="border-t align-top" style={{ borderColor: C.rowLine }} data-cashier-row>
+                <td className="px-5 py-3 f-body text-sm" style={{ color: C.ink }}>
+                  <span className="font-semibold">{r.name}</span>
+                  {r.first && <span className="block text-[11px]" style={{ color: C.muted }}>{r.first.split(", ").pop()} – {r.last.split(", ").pop()}</span>}
+                </td>
+                <td className="px-5 py-3 f-mono text-sm" style={{ color: C.ink }}>{r.sales}</td>
+                <td className="px-5 py-3 f-mono text-sm font-semibold" style={{ color: C.ink }}>{n(r.net)}{r.discounts ? <span className="block text-[11px] font-normal" style={{ color: C.muted }}>after {n(r.discounts)} discount</span> : null}{r.unpaid ? <span className="block text-[11px] font-normal" style={{ color: C.danger }}>{n(r.unpaid)} not yet paid</span> : null}</td>
+                <td className="px-5 py-3 f-mono text-sm" style={{ color: C.ink }}>{n(r.cash)}</td>
+                <td className="px-5 py-3 f-mono text-sm" style={{ color: C.ink }}>{n(r.transfer)}</td>
+                <td className="px-5 py-3 f-mono text-sm" style={{ color: C.ink }}>{n(r.card)}</td>
+                <td className="px-5 py-3 f-mono text-sm" style={{ color: r.refunds ? C.danger : C.muted }}>{r.refunds ? `−${n(r.refunds)}` : "—"}</td>
+                <td className="px-5 py-3 f-body text-sm">{endDay(r)}</td>
+              </tr>
+            ))}
+            {rep.rows.length > 1 && (
+              <tr className="border-t" style={{ borderColor: C.border, background: C.cream }}>
+                <td className="px-5 py-3 f-body text-sm font-semibold" style={{ color: C.ink }}>All cashiers</td>
+                <td className="px-5 py-3 f-mono text-sm font-semibold">{t.sales}</td>
+                <td className="px-5 py-3 f-mono text-sm font-semibold">{n(t.net)}</td>
+                <td className="px-5 py-3 f-mono text-sm font-semibold">{n(t.cash)}</td>
+                <td className="px-5 py-3 f-mono text-sm font-semibold">{n(t.transfer)}</td>
+                <td className="px-5 py-3 f-mono text-sm font-semibold">{n(t.card)}</td>
+                <td className="px-5 py-3 f-mono text-sm font-semibold">{t.refunds ? `−${n(t.refunds)}` : "—"}</td>
+                <td className="px-5 py-3 f-mono text-sm font-semibold" style={{ color: t.variance ? C.danger : C.ok }}>{t.variance ? `${n(Math.abs(t.variance))} ${t.variance > 0 ? "over" : "short"}` : "Balanced"}</td>
+              </tr>
+            )}
+          </Table>
+        </Card>
+        <p className="f-body text-[11px] mt-3" style={{ color: C.muted }}>Sales count on the day they were made. Cash, transfer and card are what each cashier took that day. End day compares the cash they counted with their cash sales, less cash refunds. Sign off counts under Approvals.</p>
+      </>)}
+    </div>
   );
 }

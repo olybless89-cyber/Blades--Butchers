@@ -57,7 +57,7 @@ export function POSView({ data, actions, permit }) {
   const customers = data.customers || [];
   const pos = data.pos || { held: [], profile: {}, discountReasons: [], myDiscountPct: 0 };
   const bySku = useMemo(() => Object.fromEntries(inventory.map((p) => [p.sku, p])), [inventory]);
-  const tillOpen = !!data.tills?.mine;
+  const tillOpen = true; // no opening step: the first sale opens the till
 
   const [cart, setCart] = useState([]);
   const [ticketDiscount, setTicketDiscount] = useState(null);
@@ -208,8 +208,8 @@ export function POSView({ data, actions, permit }) {
         <div className="flex gap-1.5">
           <Btn small variant="ghost" icon={Monitor} onClick={() => openCustomerDisplay()}>Customer screen</Btn>
           <Btn small variant="ghost" icon={Settings2} onClick={() => setModal("devices")}>Devices</Btn>
+          <TillBar till={data.tills?.mine} actions={actions} label="till" canX={permit("till.review")} />
         </div>} />
-      <TillBar till={data.tills?.mine} actions={actions} label="till" canX={permit("till.review")} />
       {tillOpen && (
         <div className="flex flex-col lg:grid lg:grid-cols-5 gap-4 lg:h-[calc(100vh-215px)] pb-20 lg:pb-0">
           {/* ---------------- products */}

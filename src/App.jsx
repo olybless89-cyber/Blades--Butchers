@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   LayoutDashboard, Beef, Scissors, Warehouse, ShoppingCart, Users, Truck, Package, Megaphone, FileBarChart,
-  Search, Bell, X, LogIn, Sparkles, ShieldCheck, Settings, ClipboardList, ClipboardCheck, Menu, LogOut, KeyRound, Loader2, RefreshCw, FileText, Landmark, ListChecks,
+  Search, Bell, X, LogIn, Sparkles, ShieldCheck, Settings, ClipboardList, ClipboardCheck, Menu, LogOut, KeyRound, Loader2, RefreshCw, FileText, Landmark, ListChecks, Wallet,
 } from "lucide-react";
 import { api, setUnauthorizedHandler } from "./lib/api.js";
 import { C, initials } from "./lib/theme.js";
@@ -11,7 +11,7 @@ import ButcherAI from "./components/ButcherAI.jsx";
 import { Dashboard, ReportsView, RoadmapView } from "./views/Overview.jsx";
 import { RanchView, ProcessingView } from "./views/Ranch.jsx";
 import { InventoryView } from "./views/Inventory.jsx";
-import { OrdersView, CustomersView, DeliveryView } from "./views/Sales.jsx";
+import { OrdersView, CustomersView, DeliveryView, CashierSalesView } from "./views/Sales.jsx";
 import { POSView } from "./views/POS.jsx";
 import { AdminView } from "./views/Admin.jsx";
 import { ProcurementView } from "./views/Procurement.jsx";
@@ -41,6 +41,7 @@ const NAV = [
   ] },
   { section: "Sales", items: [
     { id: "pos", label: "POS", icon: ShoppingCart },
+    { id: "cashiers", label: "Cashier Sales", icon: Wallet },
     { id: "orders", label: "Orders", icon: ClipboardList },
     { id: "customers", label: "Customers", icon: Users },
     { id: "delivery", label: "Delivery", icon: Truck },
@@ -376,6 +377,8 @@ export default function App() {
     setUser(null); setData(null); setRoute(null); setOfflineSession(false); setLocked(false);
   };
 
+  // Cashiers get the whole screen for selling: the menu folds away behind ☰ (checklists, refunds and orders are still there).
+  const compact = !!user && user.role === "Cashier" && (user.roles || []).length === 1;
   if (user === undefined) return <Splash />;
   if (!user && (offlineGate || !sync.online)) return (
     <OfflineSignIn pending={sync.pending}
@@ -435,7 +438,7 @@ export default function App() {
         </Modal>
       )}
 
-      <Sidebar route={route} setRoute={goTo} mobileOpen={mobileNavOpen} onClose={() => setMobileNavOpen(false)} user={user} onLogout={logout}
+      <Sidebar compact={compact} route={route} setRoute={goTo} mobileOpen={mobileNavOpen} onClose={() => setMobileNavOpen(false)} user={user} onLogout={logout}
         badges={{ approvals: (data.approvals ? [...data.approvals.adjustments.filter(() => data.approvals.canApproveStock), ...data.approvals.refunds.filter(() => data.approvals.canApproveRefunds)].filter((x) => x.status === "Pending" && !x.mine).length : 0)
           + (data.tills?.review || []).filter((t) => t.status === "Closed" && !t.mine).length,
           purchases: permit("purchasing.approve") ? (data.purchases || []).filter((p) => p.status === "Pending Approval" && p.createdById !== user.id).length : 0,
@@ -443,7 +446,7 @@ export default function App() {
           foodsafety: (data.foodSafety?.checklists || []).filter((c) => c.due).length + (permit("haccp.verify") ? (data.foodSafety?.runs || []).filter((r) => !r.verifiedBy && r.completedById !== user.id).length : 0) }} />
 
       <div className="flex-1 flex flex-col min-w-0">
-        <TopBar
+        <TopBar compact={compact}
           notifications={data.notifications} canAI={permit("ai.use")} setAiOpen={setAiOpen}
           onMenuClick={() => setMobileNavOpen(true)} onNavigate={goTo} user={user}
           onPassword={() => setPwOpen(true)} onMfa={() => setMfaOpen(true)} onPin={() => setPinOpen(true)} onLogout={logout} onRefresh={refresh} loadError={loadError}
@@ -459,6 +462,7 @@ export default function App() {
           {route === "inventory" && <InventoryView data={data} actions={actions} permit={permit} />}
           {route === "pos" && <POSView data={data} actions={actions} permit={permit} />}
           {route === "orders" && <OrdersView data={data} actions={actions} permit={permit} />}
+          {route === "cashiers" && <CashierSalesView />}
           {route === "customers" && <CustomersView data={data} actions={actions} permit={permit} />}
           {route === "delivery" && <DeliveryView data={data} actions={actions} permit={permit} />}
           {route === "procurement" && <ProcurementView data={data} actions={actions} permit={permit} />}
@@ -599,13 +603,14 @@ function PasswordForm({ onDone }) {
 }
 
 /* ============================================================ sidebar + topbar */
-function Sidebar({ route, setRoute, mobileOpen, onClose, user, onLogout, badges = {} }) {
+function Sidebar({ route, setRoute, mobileOpen, onClose, user, onLogout, badges = {}, compact = false }) {
+  const lg = (cls) => (compact ? "" : cls); // full-screen till: the menu is a drawer at every screen size
   const sections = NAV.map((s) => ({ ...s, items: s.items.filter((i) => allowed(user.roles, i.id)) })).filter((s) => s.items.length);
   return (
     <>
-      {mobileOpen && <div className="fixed inset-0 z-[65] lg:hidden" style={{ background: "rgba(28,24,21,0.55)" }} onClick={onClose} />}
+      {mobileOpen && <div className={`fixed inset-0 z-[65] ${lg("lg:hidden")}`} style={{ background: "rgba(28,24,21,0.55)" }} onClick={onClose} />}
       <aside
-        className={`w-72 sm:w-64 shrink-0 flex flex-col h-screen fixed lg:sticky top-0 inset-y-0 left-0 z-[70] lg:z-auto transition-transform duration-200 ease-out ${mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}
+        className={`w-72 sm:w-64 shrink-0 flex flex-col h-screen fixed ${lg("lg:sticky")} top-0 inset-y-0 left-0 z-[70] ${lg("lg:z-auto")} transition-transform duration-200 ease-out ${mobileOpen ? "translate-x-0" : `-translate-x-full ${lg("lg:translate-x-0")}`}`}
         style={{ background: C.charcoal }}
       >
         <div className="px-5 py-5 flex items-center gap-2.5 border-b shrink-0" style={{ borderColor: C.charcoal3 }}>
@@ -616,7 +621,7 @@ function Sidebar({ route, setRoute, mobileOpen, onClose, user, onLogout, badges 
             <div className="f-display text-base leading-tight" style={{ color: C.cream }}>BLADEOS</div>
             <div className="f-body text-[10px] uppercase tracking-wide truncate" style={{ color: C.mutedLight }}>Blades & Butchers</div>
           </div>
-          <button onClick={onClose} aria-label="Close menu" className="lg:hidden w-7 h-7 rounded-full flex items-center justify-center hover:bg-white/10 active:scale-95 transition-all shrink-0">
+          <button onClick={onClose} aria-label="Close menu" className={`${lg("lg:hidden")} w-7 h-7 rounded-full flex items-center justify-center hover:bg-white/10 active:scale-95 transition-all shrink-0`}>
             <X size={15} color={C.mutedLight} />
           </button>
         </div>
@@ -658,7 +663,7 @@ function Sidebar({ route, setRoute, mobileOpen, onClose, user, onLogout, badges 
 
 const TONE = { warn: C.warn, gold: C.gold, burgundy: C.burgundy, danger: C.danger, muted: C.muted, ok: C.ok };
 
-function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate, user, onPassword, onMfa, onPin, onLogout, onRefresh, loadError, onOfflinePin, onSync, onSessions, pending = 0 }) {
+function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate, user, onPassword, onMfa, onPin, onLogout, onRefresh, loadError, onOfflinePin, onSync, onSessions, pending = 0, compact = false }) {
   const [canInstall, setCanInstall] = useState(!!window.__bladeosInstall);
   useEffect(() => { const h = () => setCanInstall(!!window.__bladeosInstall); window.addEventListener("bladeos-installable", h); return () => window.removeEventListener("bladeos-installable", h); }, []);
   const [open, setOpen] = useState(null); // "notif" | "user" | null
@@ -673,7 +678,7 @@ function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate,
   return (
     <header className="h-16 shrink-0 flex items-center justify-between gap-2 sm:gap-4 px-3 sm:px-5 lg:px-8 border-b sticky top-0 z-30" style={{ borderColor: C.border, background: "#fff" }}>
       <div className="flex items-center gap-2 flex-1 min-w-0">
-        <button onClick={onMenuClick} aria-label="Open menu" className="lg:hidden w-9 h-9 shrink-0 rounded-lg flex items-center justify-center hover:bg-stone-100 active:scale-95 transition-all">
+        <button onClick={onMenuClick} aria-label="Open menu" className={`${compact ? "" : "lg:hidden"} w-9 h-9 shrink-0 rounded-lg flex items-center justify-center hover:bg-stone-100 active:scale-95 transition-all`}>
           <Menu size={18} style={{ color: C.ink }} />
         </button>
         {loadError && <span className="f-body text-xs truncate" style={{ color: C.danger }}>Offline — showing last loaded data</span>}

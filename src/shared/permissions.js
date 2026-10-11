@@ -117,6 +117,7 @@ export const ROUTE_PERMS = {
   inventory: "inventory.view",
   pos: "pos.use",
   orders: "orders.view",
+  cashiers: "till.review",
   customers: "customers.view",
   delivery: "delivery.view",
   procurement: "procurement.view",
