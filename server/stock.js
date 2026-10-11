@@ -122,8 +122,9 @@ export async function allocateStock(db, args) {
  * reports the shortfall so a manager can count that product.
  */
 export async function allocateStockUpTo(db, { sku, qty, kind, reference, userId, allowShort = false }) {
-  const { rows: prod } = await db.query("SELECT name FROM products WHERE sku = $1 AND active", [sku]);
+  const { rows: prod } = await db.query("SELECT name, track_stock FROM products WHERE sku = $1 AND active", [sku]);
   if (!prod[0]) throw notFound(`Product ${sku} not found.`);
+  if (!prod[0].track_stock) return { allocations: [], short: 0 };   // a service or item that isn't counted: always sellable
   const { rows } = await db.query(
     `SELECT s.location_id,
             COALESCE(sum(sl.qty) FILTER (WHERE sl.expires_on >= ${TODAY}), 0) AS sellable,

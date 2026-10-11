@@ -29,7 +29,7 @@ async function meta() {
 async function inventory() {
   const [rows, lots] = await Promise.all([
     many(`
-      SELECT p.sku, p.name, p.category, p.unit, p.price, p.cost_price, p.min_stock, p.shelf_life_days, p.barcode, p.plu, p.vat_rate,
+      SELECT p.sku, p.name, p.category, p.unit, p.price, p.cost_price, p.min_stock, p.shelf_life_days, p.barcode, p.plu, p.vat_rate, p.image, p.track_stock,
         COALESCE(sum(s.qty), 0) AS qty,
         COALESCE(json_agg(json_build_object('name', l.name, 'qty', s.qty, 'batch', s.last_batch) ORDER BY l.sells_first DESC, s.qty DESC)
           FILTER (WHERE s.qty > 0), '[]') AS locations
@@ -51,7 +51,7 @@ async function inventory() {
     const expiredQty = round2(mine.filter((l) => l.status === "Expired").reduce((s, l) => s + l.qty, 0));
     return {
       sku: r.sku, name: r.name, cat: r.category, unit: r.unit, price: r.price, costPrice: r.cost_price, shelfLife: r.shelf_life_days,
-      barcode: r.barcode, plu: r.plu, vatRate: Number(r.vat_rate) || 0,
+      barcode: r.barcode, plu: r.plu, vatRate: Number(r.vat_rate) || 0, image: r.image, trackStock: r.track_stock,
       min: r.min_stock, qty: round2(r.qty), expiredQty, sellable: round2(r.qty - expiredQty),
       locations: r.locations.map((l) => ({ ...l, qty: Number(l.qty) })), lots: mine,
       location: r.locations[0]?.name ?? "—",
@@ -477,7 +477,7 @@ async function suppliers() {
 
 async function setup() {
   const [products, locations, ranches, profile] = await Promise.all([
-    many(`SELECT p.sku, p.name, p.category, p.unit, p.price, p.cost_price, p.min_stock, p.active, p.shelf_life_days, p.barcode, p.plu, p.vat_rate,
+    many(`SELECT p.sku, p.name, p.category, p.unit, p.price, p.cost_price, p.min_stock, p.active, p.shelf_life_days, p.barcode, p.plu, p.vat_rate, p.image, p.track_stock,
         COALESCE((SELECT sum(qty) FROM stock WHERE product_sku = p.sku), 0) AS qty,
         EXISTS (SELECT 1 FROM stock_movements WHERE product_sku = p.sku) AS used
       FROM products p ORDER BY p.active DESC, p.sort, p.name`),
@@ -488,7 +488,7 @@ async function setup() {
     businessProfile(),
   ]);
   return {
-    products: products.map((p) => ({ sku: p.sku, name: p.name, category: p.category, unit: p.unit, price: p.price, costPrice: p.cost_price, min: p.min_stock, active: p.active, qty: round2(p.qty), used: p.used, shelfLife: p.shelf_life_days, barcode: p.barcode ?? "", plu: p.plu ?? "", vatRate: Number(p.vat_rate) || 0 })),
+    products: products.map((p) => ({ sku: p.sku, name: p.name, category: p.category, unit: p.unit, price: p.price, costPrice: p.cost_price, min: p.min_stock, active: p.active, qty: round2(p.qty), used: p.used, shelfLife: p.shelf_life_days, barcode: p.barcode ?? "", plu: p.plu ?? "", vatRate: Number(p.vat_rate) || 0, image: p.image ?? "", trackStock: p.track_stock })),
     locations, ranches, profile,
   };
 }

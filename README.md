@@ -34,7 +34,10 @@ Do **not** set `NODE_ENV` — the start script sets it, and setting it at build 
    creates reference data and the Owner account, then listens. `/health` checks the database.
 
 ### First sign-in checklist
-A new install has only the starting catalogue: 11 products, 6 storage locations and 2 ranches.
+A new install has the shop's range from bladesbutchers.com — 19 products, 16 with photos on the POS tiles (beef cuts, goat,
+ram, chicken, whole bird, turkey, eggs, sausages, marinated meat, frozen packs, kpomo and 4 packaging items) — plus 6 storage
+locations and 2 ranches. Prices are starting prices: set the real ones in Business Setup → Products. Packaging items aren't
+stock-counted (always sellable); everything else needs stock received before it can be sold.
 The dashboard shows a *Getting started* card that ticks these off:
 1. Sign in — BladeOS asks the Owner to replace the temporary `ADMIN_PASSWORD`, then to turn on two-step sign-in
    (scan the QR code with Google Authenticator / Microsoft Authenticator / Authy) and save the 10 recovery codes.
@@ -144,6 +147,9 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
     Sales record whether each KG line came off the scale; *Reports* shows the share. Settings (baud rate, poll command)
     under the ⚙ next to *Connect scale*, saved per computer. Tested against a simulated scale — confirm with yours.
   - *Backups* (`server/backup.js`): see below.
+- **Product photos** live in `public/products/` and show on the POS tiles (Business Setup → Products → Edit → Photo:
+  `/products/<file>` or an `https://` link). Items with *Count stock* unticked (services, packaging) are always sellable
+  and don't appear on the stock screens.
 - **Stock** is held per product *per location*, broken down by lot. Every change writes a `stock_movements` row.
   Sales, transfers, adjustments, processing and cancellations run in transactions with row locks,
   and the database refuses negative stock — concurrent tills can't oversell.

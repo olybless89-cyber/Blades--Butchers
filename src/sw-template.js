@@ -62,7 +62,7 @@ self.addEventListener("fetch", (e) => {
     const hit = await caches.match(req);
     if (hit) return hit;
     const r = await fetch(req);
-    if (r.ok && (url.pathname.startsWith("/assets/") || url.pathname.startsWith("/icons/"))) (await caches.open(CACHE)).put(req, r.clone());
+    if (r.ok && (url.pathname.startsWith("/assets/") || url.pathname.startsWith("/icons/") || url.pathname.startsWith("/products/"))) (await caches.open(CACHE)).put(req, r.clone());
     return r;
   })());
 });

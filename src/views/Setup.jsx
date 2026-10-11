@@ -63,6 +63,7 @@ export function SetupView({ data, actions, permit }) {
                 <tr key={p.sku} className="border-t" style={{ borderColor: C.rowLine, opacity: p.active ? 1 : 0.55 }}>
                   <td className="px-5 py-3">
                     <div className="f-body text-sm font-medium flex items-center gap-1.5" style={{ color: C.ink }}>
+                      {p.image && <img src={p.image} alt="" className="w-7 h-7 rounded object-cover shrink-0" style={{ background: C.cream2 }} onError={(e) => { e.currentTarget.style.display = "none"; }} />}
                       {p.name}{locked && <Lock size={11} style={{ color: C.gold }} title="Receives processing output" />}
                     </div>
                     <div className="f-mono text-[11px]" style={{ color: C.muted }}>{p.sku}</div>
@@ -73,7 +74,7 @@ export function SetupView({ data, actions, permit }) {
                   {showCost && <td className="px-5 py-3 f-mono text-sm" style={{ color: C.muted }}>{nairaFmt(p.costPrice)}</td>}
                   {showCost && <td className="px-5 py-3 f-mono text-sm font-semibold" style={{ color: margin > 0 ? C.ok : C.danger }}>{margin}%</td>}
                   <td className="px-5 py-3 f-mono text-xs" style={{ color: C.muted }}>{p.min}</td>
-                  <td className="px-5 py-3 f-mono text-sm" style={{ color: C.ink }}>{qtyFmt(p.qty, p.unit)}</td>
+                  <td className="px-5 py-3 f-mono text-sm" style={{ color: p.trackStock === false ? C.muted : C.ink }}>{p.trackStock === false ? "Not counted" : qtyFmt(p.qty, p.unit)}</td>
                   <td className="px-5 py-3">
                     <div className="flex gap-1 justify-end">
                       {!p.active && <StatusPill status="Inactive" />}
@@ -143,6 +144,7 @@ function ProductForm({ item, categories, onClose, actions }) {
     name: item?.name ?? "", sku: item?.sku ?? "", category: item?.category ?? "", unit: item?.unit ?? "KG",
     price: String(item?.price ?? ""), costPrice: String(item?.costPrice ?? ""), min: String(item?.min ?? "0"), shelfLife: String(item?.shelfLife ?? 5),
     barcode: item?.barcode ?? "", plu: String(item?.plu ?? ""), vatRate: String(item?.vatRate ?? 0),
+    image: item?.image ?? "", trackStock: item?.trackStock ?? true,
   });
   const [busy, run] = useBusy();
   const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
@@ -151,14 +153,15 @@ function ProductForm({ item, categories, onClose, actions }) {
   const valid = f.name.trim().length >= 2 && f.category.trim().length >= 2 && int(f.price) && int(f.costPrice) && f.min !== "" && Number(f.min) >= 0
     && (!f.sku || /^[A-Za-z0-9][A-Za-z0-9-]{1,23}$/.test(f.sku)) && int(f.shelfLife) && Number(f.shelfLife) >= 1 && Number(f.shelfLife) <= 730
     && (!f.barcode || /^\d{8,14}$/.test(f.barcode.trim())) && (f.plu === "" || (int(f.plu) && Number(f.plu) >= 1 && Number(f.plu) <= 99999))
-    && f.vatRate !== "" && Number(f.vatRate) >= 0 && Number(f.vatRate) <= 100;
+    && f.vatRate !== "" && Number(f.vatRate) >= 0 && Number(f.vatRate) <= 100
+    && (!f.image.trim() || /^(\/products\/[\w.-]+|https:\/\/\S+)$/.test(f.image.trim()));
   const margin = Number(f.price) > 0 ? Math.round(((Number(f.price) - Number(f.costPrice)) / Number(f.price)) * 100) : 0;
 
   const submit = (e) => {
     e.preventDefault();
     run(async () => {
       const body = { name: f.name.trim(), category: f.category.trim(), unit: f.unit, price: Number(f.price), costPrice: Number(f.costPrice), min: Number(f.min), shelfLife: Number(f.shelfLife),
-        barcode: f.barcode.trim(), plu: f.plu === "" ? "" : Number(f.plu), vatRate: Number(f.vatRate) };
+        barcode: f.barcode.trim(), plu: f.plu === "" ? "" : Number(f.plu), vatRate: Number(f.vatRate), image: f.image.trim(), trackStock: f.trackStock };
       const r = isNew
         ? await actions.addProduct({ ...body, ...(f.sku ? { sku: f.sku.toUpperCase() } : {}) })
         : await actions.updateProduct(item.sku, Object.fromEntries(Object.entries(body).filter(([k, v]) => v !== (k === "costPrice" ? item.costPrice : item[k]))), `${body.name} saved`);
@@ -193,6 +196,17 @@ function ProductForm({ item, categories, onClose, actions }) {
           </Field>
           <Field label="PLU" hint="Number on scale labels and the till keypad"><Input mono type="number" min="1" max="99999" step="1" value={f.plu} onChange={set("plu")} placeholder={isNew ? "auto" : ""} /></Field>
           <Field label="VAT (%)" hint="0 for exempt basic food; price includes VAT"><Input mono type="number" min="0" max="100" step="0.5" value={f.vatRate} onChange={set("vatRate")} /></Field>
+          <div className="col-span-2"><Field label="Photo" hint="/products/<file> (in the app) or an https:// link — shown on the POS tile"
+            error={f.image.trim() && !/^(\/products\/[\w.-]+|https:\/\/\S+)$/.test(f.image.trim()) ? "Use /products/<file> or https://…" : null}>
+            <div className="flex items-center gap-3">
+              {f.image.trim() && <img src={f.image.trim()} alt="" className="w-12 h-12 rounded-lg object-cover shrink-0" style={{ background: C.cream2 }} onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} />}
+              <Input value={f.image} onChange={set("image")} maxLength={300} placeholder="/products/beef.png" />
+            </div>
+          </Field></div>
+          <label className="col-span-2 flex items-start gap-2.5 f-body text-sm cursor-pointer" style={{ color: C.ink }}>
+            <input type="checkbox" checked={f.trackStock} onChange={(e) => setF((p) => ({ ...p, trackStock: e.target.checked }))} className="mt-0.5 w-4 h-4" style={{ accentColor: C.burgundy }} />
+            <span>Count stock for this item<span className="block text-xs" style={{ color: C.muted }}>Untick for services and items you don't count (e.g. sealing) — they can always be sold.</span></span>
+          </label>
         </div>
         <div className="f-body text-xs" style={{ color: C.muted }}>
           Gross margin: <span className="f-mono font-semibold" style={{ color: margin > 0 ? C.ok : C.danger }}>{margin}%</span>

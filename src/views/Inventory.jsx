@@ -6,7 +6,7 @@ import { ColdChainCard, CountsCard, BatchesModal, TraceModal } from "./Operation
 import { KpiCard, SectionHeader, Btn, StatusPill, Modal, Field, Input, Select, Card, Table, useBusy } from "../components/ui.jsx";
 
 export function InventoryView({ data, actions, permit }) {
-  const inventory = data.inventory;
+  const inventory = (data.inventory || []).filter((i) => i.trackStock !== false); // services and uncounted items have no stock to manage
   const locations = data.meta.locations;
   const [modal, setModal] = useState(null); // {type, sku?}
   const canReceive = permit("stock.receive");

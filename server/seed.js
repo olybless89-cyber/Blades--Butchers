@@ -48,6 +48,50 @@ export async function seedReference() {
   });
 }
 
+/* =====================================================================
+   The shop's range from bladesbutchers.com, with its photos (public/products/).
+   Runs ONCE: adds what's missing and puts photos on products that have none.
+   Prices marked here are starting prices — the Owner sets the real ones in
+   Business Setup. Packaging services aren't stock-counted.
+   ===================================================================== */
+export const WEBSITE_PHOTOS = {
+  "PB-BEEF": "/products/beef.png", "BL-BEEF": "/products/boneless.jpeg", "MINCE-BEEF": "/products/minced.jpg",
+  "STEW-BEEF": "/products/stew-cuts.jpg", "GOAT-MEAT": "/products/goat-meat.png", "CHICKEN": "/products/chicken.png",
+  "TURKEY": "/products/turkey.png", "SAUSAGE": "/products/sausages.jpg",
+};
+export const WEBSITE_PRODUCTS = [
+  // sku, name, category, unit, price, cost, min, vat %, photo, counted
+  ["WHOLE-BIRD", "Whole Bird", "Poultry", "Unit", 9500, 5890, 10, 0, "/products/whole-bird.jpg", true],
+  ["EGGS", "Eggs (crate)", "Poultry", "Pack", 5500, 3410, 10, 0, "/products/eggs.jpg", true],
+  ["MARINATED", "Marinated Meat", "Processed", "KG", 9800, 6076, 10, 0, "/products/marinated-meat.jpg", true],
+  ["FROZEN-PACK", "Frozen Meat Pack", "Processed", "Pack", 15000, 9300, 10, 0, "/products/frozen-meat-pack.jpg", true],
+  ["PKG-SEAL", "Basic Sealing", "Packaging", "Unit", 200, 60, 0, 7.5, "/products/basic-sealing.png", false],
+  ["PKG-KRAFT", "Kraft Box", "Packaging", "Unit", 1000, 450, 0, 7.5, "/products/kraft-box.png", false],
+  ["PKG-TAKEOUT", "Plastic Takeout Pack", "Packaging", "Unit", 300, 120, 0, 7.5, "/products/takeout-pack.png", false],
+  ["PKG-ZIPLOCK", "Branded Zip-Lock Bag", "Packaging", "Unit", 250, 100, 0, 7.5, "/products/zip-lock-bag.png", false],
+];
+
+export async function seedWebsiteCatalogue() {
+  await tx(async (db) => {
+    await db.query("SELECT pg_advisory_xact_lock(727276)");
+    if ((await db.query("SELECT 1 FROM settings WHERE key = 'catalogue_website_v1'")).rows[0]) return;
+    for (const [sku, image] of Object.entries(WEBSITE_PHOTOS)) await db.query("UPDATE products SET image = $2 WHERE sku = $1 AND image IS NULL", [sku, image]);
+    let added = 0;
+    for (const [sku, name, category, unit, price, cost, min, vat, image, counted] of WEBSITE_PRODUCTS) {
+      const exists = (await db.query("SELECT 1 FROM products WHERE sku = $1 OR lower(name) = lower($2)", [sku, name])).rows[0];
+      if (exists) continue;
+      const { s, n } = (await db.query("SELECT COALESCE(max(sort), 0) + 1 AS s, COALESCE(max(plu), 0) + 1 AS n FROM products")).rows[0];
+      await db.query(
+        `INSERT INTO products (sku, name, category, unit, price, cost_price, min_stock, sort, plu, vat_rate, image, track_stock, shelf_life_days)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [sku, name, category, unit, price, cost, min, s, n, vat, image, counted, category === "Packaging" ? 730 : unit === "Pack" ? 30 : 5]);
+      added++;
+    }
+    await db.query("INSERT INTO settings (key, value) VALUES ('catalogue_website_v1', 'true'::jsonb)");
+    await db.query("INSERT INTO audit_log (action, detail) VALUES ('Website product range added', $1)", [`${added} new products, photos on ${Object.keys(WEBSITE_PHOTOS).length}`]);
+  });
+}
+
 /** Creates the first Owner from ADMIN_EMAIL / ADMIN_PASSWORD if there are no users yet. */
 export async function ensureOwner() {
   const { rows } = await query("SELECT count(*)::int AS n FROM users");
@@ -67,6 +111,7 @@ export async function ensureOwner() {
 /** Called on every boot: reference data (idempotent) + first Owner. Business data is entered by staff. */
 export async function bootstrap() {
   await seedReference();
+  await seedWebsiteCatalogue();
   await ensureOwner();
   const { breakGlassMfa } = await import("./auth.js");
   await breakGlassMfa();

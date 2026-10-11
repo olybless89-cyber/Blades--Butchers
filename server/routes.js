@@ -358,6 +358,9 @@ export function apiRouter() {
     barcode: z.string().trim().regex(/^\d{8,14}$/, "8–14 digits (EAN / UPC)").nullable().optional().or(z.literal("")),
     plu: z.coerce.number().int().min(1).max(99999).nullable().optional().or(z.literal("")),
     vatRate: z.coerce.number().min(0).max(100).optional(),
+    // A photo in the app (/products/…) or on the web (https://…), shown on the POS tile.
+    image: z.string().trim().max(300).regex(/^(\/products\/[\w.-]+|https:\/\/\S+)$/, "use /products/<file> or an https:// link").nullable().optional().or(z.literal("")),
+    trackStock: z.boolean().optional(),   // false: always sellable, never counted (e.g. a sealing service)
   });
 
   r.post("/products", requirePerm("products.edit"), ah(async (req, res) => {
@@ -370,9 +373,9 @@ export function apiRouter() {
       const sort = (await db.query("SELECT COALESCE(max(sort), 0) + 1 AS s FROM products")).rows[0].s;
       const plu = b.plu || (await db.query("SELECT COALESCE(max(plu), 0) + 1 AS n FROM products")).rows[0].n;  // next free PLU
       await db.query(
-        `INSERT INTO products (sku, name, category, unit, price, cost_price, min_stock, sort, shelf_life_days, barcode, plu, vat_rate)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-        [sku, b.name, b.category, b.unit, b.price, b.costPrice, b.min, sort, b.shelfLife ?? 5, b.barcode || null, plu, b.vatRate ?? 0]
+        `INSERT INTO products (sku, name, category, unit, price, cost_price, min_stock, sort, shelf_life_days, barcode, plu, vat_rate, image, track_stock)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        [sku, b.name, b.category, b.unit, b.price, b.costPrice, b.min, sort, b.shelfLife ?? 5, b.barcode || null, plu, b.vatRate ?? 0, b.image || null, b.trackStock ?? true]
       );
       await audit(db, req.user.id, `Added product ${b.name}`, `${sku} · ₦${b.price.toLocaleString("en-NG")}/${b.unit}`);
       return { sku, name: b.name };
@@ -399,9 +402,14 @@ export function apiRouter() {
         if (held > 0) throw conflict(`${cur.name} still has ${round3(held)} ${cur.unit} in stock. Sell, write off or correct it to zero first.`);
       }
       const n = { name: b.name ?? cur.name, category: b.category ?? cur.category, unit: b.unit ?? cur.unit, price: b.price ?? cur.price, cost: b.costPrice ?? cur.cost_price, min: b.min ?? cur.min_stock, active: b.active ?? cur.active, shelf: b.shelfLife ?? cur.shelf_life_days,
-        barcode: b.barcode !== undefined ? b.barcode || null : cur.barcode, plu: b.plu !== undefined ? b.plu || null : cur.plu, vat: b.vatRate ?? Number(cur.vat_rate) };
-      await db.query("UPDATE products SET name=$2, category=$3, unit=$4, price=$5, cost_price=$6, min_stock=$7, active=$8, shelf_life_days=$9, barcode=$10, plu=$11, vat_rate=$12 WHERE sku=$1",
-        [cur.sku, n.name, n.category, n.unit, n.price, n.cost, n.min, n.active, n.shelf, n.barcode, n.plu, n.vat]);
+        barcode: b.barcode !== undefined ? b.barcode || null : cur.barcode, plu: b.plu !== undefined ? b.plu || null : cur.plu, vat: b.vatRate ?? Number(cur.vat_rate),
+        image: b.image !== undefined ? b.image || null : cur.image, track: b.trackStock ?? cur.track_stock };
+      if (n.track === false && cur.track_stock) {
+        const held = (await db.query("SELECT COALESCE(sum(qty), 0) AS q FROM stock WHERE product_sku = $1", [cur.sku])).rows[0].q;
+        if (held > 0) throw conflict(`${cur.name} still has ${round3(held)} ${cur.unit} in stock — bring it to zero before turning stock counting off.`);
+      }
+      await db.query("UPDATE products SET name=$2, category=$3, unit=$4, price=$5, cost_price=$6, min_stock=$7, active=$8, shelf_life_days=$9, barcode=$10, plu=$11, vat_rate=$12, image=$13, track_stock=$14 WHERE sku=$1",
+        [cur.sku, n.name, n.category, n.unit, n.price, n.cost, n.min, n.active, n.shelf, n.barcode, n.plu, n.vat, n.image, n.track]);
       const fmt = (v) => `₦${v.toLocaleString("en-NG")}`;
       const ch = [
         n.name !== cur.name && `renamed from ${cur.name}`,
@@ -410,6 +418,8 @@ export function apiRouter() {
         n.price !== cur.price && `price ${fmt(cur.price)} → ${fmt(n.price)}`,
         n.cost !== cur.cost_price && `cost ${fmt(cur.cost_price)} → ${fmt(n.cost)}`,
         n.min !== cur.min_stock && `min stock ${cur.min_stock} → ${n.min}`,
+        n.image !== cur.image && "photo changed",
+        n.track !== cur.track_stock && (n.track ? "stock counting on" : "stock counting off"),
         n.active !== cur.active && (n.active ? "restored" : "retired"),
         n.shelf !== cur.shelf_life_days && `shelf life ${cur.shelf_life_days} → ${n.shelf} days`,
         n.barcode !== cur.barcode && `barcode → ${n.barcode ?? "none"}`,

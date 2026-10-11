@@ -78,7 +78,8 @@ export function POSView({ data, actions, permit }) {
   const priced = priceTicket(cart, ticketDiscount, (sku) => bySku[sku]?.vatRate || 0);
   const customer = customers.find((c) => String(c.id) === String(customerId));
   const inCart = (sku, exceptKey) => cart.filter((c) => c.sku === sku && c.key !== exceptKey).reduce((s, c) => s + c.qty, 0);
-  const availableOf = (p, exceptKey) => Math.max(0, round3((p.sellable ?? p.qty) - inCart(p.sku, exceptKey)));
+  // Items that aren't stock-counted (e.g. a sealing service) can always be sold.
+  const availableOf = (p, exceptKey) => (p.trackStock === false ? 99999 : Math.max(0, round3((p.sellable ?? p.qty) - inCart(p.sku, exceptKey))));
   const needsApproval = priced.discount > 0 && priced.pct > pos.myDiscountPct + 1e-9 && (!approval || priced.pct > approval.maxPct + 1e-9);
 
   useEffect(() => { if (customer && customer.area !== "—") setArea(customer.area); }, [customerId]);
@@ -231,7 +232,7 @@ export function POSView({ data, actions, permit }) {
                   style={{ background: cat === c ? C.burgundy : C.cream, color: cat === c ? "#fff" : C.muted }}>{c}</button>
               ))}
             </div>
-            <div className="p-3 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-2.5 lg:overflow-y-auto lg:flex-1 content-start">
+            <div className="p-3 grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 auto-rows-max gap-2.5 lg:overflow-y-auto lg:flex-1 lg:min-h-0 content-start">
               {shown.map((p) => {
                 const avail = availableOf(p);
                 const out = avail <= 0;
@@ -239,11 +240,12 @@ export function POSView({ data, actions, permit }) {
                   <button key={p.sku} disabled={out} onClick={() => (p.unit === "KG" ? setPicking(p) : addLine(p, 1))}
                     className="rounded-xl p-3 text-left border hover:shadow-md transition-all active:scale-[0.97] disabled:opacity-45 disabled:cursor-not-allowed min-h-[92px] flex flex-col"
                     style={{ background: picking?.sku === p.sku ? "#F3E4E6" : C.cream, borderColor: picking?.sku === p.sku ? C.burgundy : C.border }}>
+                    {p.image && <ProductPhoto src={p.image} />}
                     <div className="flex items-start justify-between gap-1.5 mb-1">
                       <span className="f-body text-sm font-semibold leading-tight" style={{ color: C.ink }}>{p.name}</span>
                       {p.plu ? <span className="f-mono text-[10px] shrink-0 px-1 rounded" style={{ color: C.muted, background: "#fff" }}>{p.plu}</span> : null}
                     </div>
-                    <div className="f-mono text-[11px] mb-auto" style={{ color: out ? C.danger : C.muted }}>{out ? "Out of stock" : qtyFmt(avail, p.unit)}</div>
+                    <div className="f-mono text-[11px] mb-auto" style={{ color: out ? C.danger : C.muted }}>{out ? "Out of stock" : p.trackStock === false ? "Always available" : qtyFmt(avail, p.unit)}</div>
                     <div className="f-mono text-sm font-semibold mt-1.5" style={{ color: C.burgundy }}>{nairaFmt(p.price)}<span className="text-[10px] font-normal" style={{ color: C.muted }}>/{p.unit}</span></div>
                   </button>
                 );
@@ -772,4 +774,11 @@ export function TillReportModal({ code, actions, onClose }) {
       )}
     </Modal>
   );
+}
+
+/** A product's photo on its POS tile; hidden if the file is missing, so the tile still works. */
+function ProductPhoto({ src }) {
+  const [ok, setOk] = useState(true);
+  if (!ok) return null;
+  return <img src={src} alt="" loading="lazy" onError={() => setOk(false)} className="-mx-3 -mt-3 mb-2 h-20 object-cover rounded-t-xl shrink-0" style={{ width: "calc(100% + 1.5rem)", maxWidth: "none", background: C.cream2 }} />;
 }
