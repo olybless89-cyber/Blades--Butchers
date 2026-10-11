@@ -197,7 +197,7 @@ async function orders(limit = 300, where = "TRUE") {
 
 async function customers() {
   const rows = await many(`
-    SELECT c.id, c.code, c.name, c.phone, c.area,
+    SELECT c.id, c.code, c.name, c.phone, c.area, c.marketing_ok,
       count(o.id)::int AS orders, COALESCE(sum(o.net_total), 0) AS spent, max(o.created_at) AS last,
       (SELECT array_agg(name) FROM (
          SELECT p.name FROM order_items oi JOIN orders o2 ON o2.id = oi.order_id JOIN products p ON p.sku = oi.product_sku
@@ -207,9 +207,10 @@ async function customers() {
            (SELECT string_agg(p.name, ', ') FROM order_items oi JOIN products p ON p.sku = oi.product_sku WHERE oi.order_id = o3.id) AS product
          FROM orders o3 WHERE o3.customer_id = c.id ORDER BY o3.created_at DESC LIMIT 8) h) AS history
     FROM customers c LEFT JOIN orders o ON o.customer_id = c.id AND o.status <> 'Cancelled'
+    WHERE c.erased_at IS NULL
     GROUP BY c.id ORDER BY spent DESC, c.name`);
   return rows.map((c) => ({
-    id: c.id, code: c.code, name: c.name, phone: c.phone ?? "—", area: c.area ?? "—", orders: c.orders, spent: c.spent,
+    id: c.id, code: c.code, name: c.name, phone: c.phone ?? "—", area: c.area ?? "—", marketingOk: c.marketing_ok, orders: c.orders, spent: c.spent,
     avg: c.orders ? Math.round(c.spent / c.orders) : 0, last: c.last ? fmtDate(c.last) : "No orders yet",
     favourites: c.favourites ?? [], history: (c.history ?? []).map((h) => ({ ...h, date: fmtDate(h.created_at) })),
   }));
@@ -347,7 +348,7 @@ async function insights() {
            COALESCE((SELECT -sum(m.delta) FROM stock_movements m WHERE m.kind = 'wastage' AND ${IN_MONTH("m.created_at")}), 0) AS store,
            COALESCE((SELECT -sum(m.delta * p.cost_price) FROM stock_movements m JOIN products p ON p.sku = m.product_sku WHERE m.kind = 'wastage' AND ${IN_MONTH("m.created_at")}), 0) AS store_cost`),
     many(`SELECT c.name, max(o.created_at) AS last FROM customers c JOIN orders o ON o.customer_id = c.id AND o.status <> 'Cancelled'
-          GROUP BY c.id HAVING max(o.created_at) < now() - interval '21 days' ORDER BY sum(o.net_total) DESC LIMIT 3`),
+          WHERE c.erased_at IS NULL GROUP BY c.id HAVING max(o.created_at) < now() - interval '21 days' ORDER BY sum(o.net_total) DESC LIMIT 3`),
     one(`SELECT b.code, b.yield_pct FROM processing_batches b WHERE b.processed_at > now() - interval '30 days' ORDER BY b.yield_pct ASC LIMIT 1`),
     // "Last weekend" = the most recent fully completed Fri–Sun.
     one(`WITH t AS (SELECT ${TODAY} AS d, extract(isodow FROM ${TODAY})::int AS w),

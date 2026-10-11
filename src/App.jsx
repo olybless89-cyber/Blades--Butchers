@@ -18,7 +18,8 @@ import { ProcurementView } from "./views/Procurement.jsx";
 import { MarketingView } from "./views/Marketing.jsx";
 import { SetupView } from "./views/Setup.jsx";
 import { ApprovalsView } from "./views/Approvals.jsx";
-import { MfaStep, MfaEnrol } from "./views/Security.jsx";
+import { MfaStep, MfaEnrol, SessionsPanel } from "./views/Security.jsx";
+import { HomePage } from "./views/Home.jsx";
 import { PurchasesView, PaymentsView, FoodSafetyView } from "./views/Business.jsx";
 import { ScaleProvider } from "./lib/scale.jsx";
 import { OfflineSignIn, OfflineLock, OfflineBanner, SyncModal, OfflinePinModal, UpdateBanner } from "./views/Offline.jsx";
@@ -75,6 +76,8 @@ export default function App() {
   const [aiOpen, setAiOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pwOpen, setPwOpen] = useState(false);
+  const [sessOpen, setSessOpen] = useState(false);
+  const [atHome, setAtHome] = useState(showHomeFirst);
   const [mfaOpen, setMfaOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const [reportTab, setReportTab] = useState(null);
@@ -299,6 +302,8 @@ export default function App() {
     updateOrder: (code, body) => act(() => api(`/orders/${encodeURIComponent(code)}`, { method: "PATCH", body }), `${code} updated`),
     getOrder: (code) => api(`/orders/${encodeURIComponent(code)}`),
     addCustomer: (body) => act(() => api("/customers", { method: "POST", body }), (r) => `${r.name} added`),
+    updateCustomer: (id, body, msg) => act(() => api(`/customers/${id}`, { method: "PATCH", body }), msg),
+    eraseCustomer: (id) => act(() => api(`/customers/${id}/erase`, { method: "POST", body: {} }), "Customer's personal data erased"),
     addSupplier: (body) => act(() => api("/suppliers", { method: "POST", body }), (r) => `${r.name} added`),
     updateSupplier: (id, body, msg = "Supplier updated") => act(() => api(`/suppliers/${id}`, { method: "PATCH", body }), msg),
     supplierEntry: (id, body, msg) => act(() => api(`/suppliers/${id}/entries`, { method: "POST", body }), msg),
@@ -379,7 +384,8 @@ export default function App() {
       onSignedIn={async (snap) => { setOfflineGate(false); setOfflineSession(true); setData(await withPending(snap.state, snap.user.id)); setUser(snap.user); setRoute(null); }}
       onTryOnline={async () => { try { const r = await api("/auth/me"); await setOnline(true); setOfflineGate(false); setUser(r.user); } catch (e) { if (e.status !== 0) { await setOnline(true); setOfflineGate(false); } } }} />
   );
-  if (!user) return (<>{toast && <Toast toast={toast} onDone={() => setToast(null)} />}<LoginScreen pending={sync.pending} onLogin={(u) => { setUser(u); setRoute(null); }} /></>);
+  if (!user && atHome && !sync.pending) return <HomePage onSignIn={() => { setAtHome(false); window.scrollTo(0, 0); }} />;
+  if (!user) return (<>{toast && <Toast toast={toast} onDone={() => setToast(null)} />}<LoginScreen pending={sync.pending} onLogin={(u) => { setUser(u); setRoute(null); setAtHome(false); }} onHome={isTill() ? null : () => setAtHome(true)} /></>);
   if (!user.mustChangePassword && user.mfaSetupRequired) return (
     <div className="min-h-screen flex items-center justify-center px-4 py-8" style={{ background: C.charcoal }}>
       <div className="w-full max-w-md rounded-2xl p-6" style={{ background: "#fff" }}>
@@ -421,6 +427,11 @@ export default function App() {
           <PasswordForm onDone={() => { notify("Password changed"); setPwOpen(false); }} />
         </Modal>
       )}
+      {sessOpen && (
+        <Modal title="Signed-in devices" onClose={() => setSessOpen(false)}>
+          <SessionsPanel notify={notify} />
+        </Modal>
+      )}
       {reportTab && (
         <Modal title="Report Center" onClose={() => setReportTab(null)} wide>
           <ReportsView data={data} initialTab={reportTab} notify={notify} />
@@ -439,7 +450,7 @@ export default function App() {
           notifications={data.notifications} canAI={permit("ai.use")} setAiOpen={setAiOpen}
           onMenuClick={() => setMobileNavOpen(true)} onNavigate={goTo} user={user}
           onPassword={() => setPwOpen(true)} onMfa={() => setMfaOpen(true)} onPin={() => setPinOpen(true)} onLogout={logout} onRefresh={refresh} loadError={loadError}
-          onOfflinePin={() => setOffPinOpen(true)} onSync={() => setSyncOpen(true)} pending={sync.pending + sync.errors}
+          onOfflinePin={() => setOffPinOpen(true)} onSync={() => setSyncOpen(true)} onSessions={() => setSessOpen(true)} pending={sync.pending + sync.errors}
         />
         <OfflineBanner sync={sync} offlineSession={offlineSession} onOpen={() => setSyncOpen(true)} onSignIn={logout} />
         <UpdateBanner />
@@ -492,7 +503,19 @@ function Splash({ error, onRetry, onLogout }) {
   );
 }
 
-function LoginScreen({ onLogin, pending = 0 }) {
+/** Tills and the installed app open straight on sign-in; an ordinary browser tab shows the home page first. */
+function isTill() {
+  try {
+    if (window.matchMedia?.("(display-mode: standalone)").matches || window.matchMedia?.("(display-mode: window-controls-overlay)").matches) return true;
+    if (JSON.parse(localStorage.getItem("bladeos.devices") || "{}").tillNo) return true;
+  } catch { /* storage blocked: treat as a normal browser */ }
+  return false;
+}
+function showHomeFirst() {
+  return !isTill() && !window.location.hash;
+}
+
+function LoginScreen({ onLogin, pending = 0, onHome }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
@@ -543,9 +566,10 @@ function LoginScreen({ onLogin, pending = 0 }) {
           <button type="submit" disabled={busy} className="w-full f-body font-semibold rounded-lg py-3 text-sm flex items-center justify-center gap-2 disabled:opacity-60" style={{ background: C.burgundy, color: "#fff" }}>
             {busy ? <Loader2 size={15} className="animate-spin" /> : <LogIn size={15} />} Sign In
           </button>
-          <p className="f-body text-xs text-center mt-4" style={{ color: C.muted }}>Forgot your password? Ask your administrator to reset it.</p>
+          <p className="f-body text-xs text-center mt-4" style={{ color: C.mutedLight }}>Forgot your password? Ask your administrator to reset it.</p>
         </form>)}
-        <p className="f-body text-center text-xs mt-6" style={{ color: C.muted }}>Digital Web Oracle ICT · Abuja, Nigeria</p>
+        {onHome && <button onClick={onHome} className="f-body text-xs mt-6 mx-auto block hover:underline" style={{ color: C.mutedLight }}>← About BladeOS</button>}
+        <p className="f-body text-center text-xs mt-6" style={{ color: C.mutedLight }}>Digital Web Oracle ICT · Abuja, Nigeria</p>
       </div>
     </div>
   );
@@ -603,7 +627,7 @@ function Sidebar({ route, setRoute, mobileOpen, onClose, user, onLogout, badges 
         <nav className="flex-1 overflow-y-auto py-3 px-3">
           {sections.map((sec) => (
             <div key={sec.section} className="mb-4">
-              <div className="f-body text-[10px] font-semibold uppercase tracking-widest px-3 mb-1.5" style={{ color: C.muted }}>{sec.section}</div>
+              <div className="f-body text-[10px] font-semibold uppercase tracking-widest px-3 mb-1.5" style={{ color: C.mutedLight }}>{sec.section}</div>
               {sec.items.map((it) => {
                 const active = route === it.id;
                 return (
@@ -638,7 +662,7 @@ function Sidebar({ route, setRoute, mobileOpen, onClose, user, onLogout, badges 
 
 const TONE = { warn: C.warn, gold: C.gold, burgundy: C.burgundy, danger: C.danger, muted: C.muted, ok: C.ok };
 
-function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate, user, onPassword, onMfa, onPin, onLogout, onRefresh, loadError, onOfflinePin, onSync, pending = 0 }) {
+function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate, user, onPassword, onMfa, onPin, onLogout, onRefresh, loadError, onOfflinePin, onSync, onSessions, pending = 0 }) {
   const [canInstall, setCanInstall] = useState(!!window.__bladeosInstall);
   useEffect(() => { const h = () => setCanInstall(!!window.__bladeosInstall); window.addEventListener("bladeos-installable", h); return () => window.removeEventListener("bladeos-installable", h); }, []);
   const [open, setOpen] = useState(null); // "notif" | "user" | null
@@ -662,7 +686,7 @@ function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate,
         <button onClick={onRefresh} aria-label="Refresh data" title="Refresh" className="w-9 h-9 rounded-lg flex items-center justify-center hover:bg-stone-100 active:scale-95 transition-all">
           <RefreshCw size={15} style={{ color: C.muted }} />
         </button>
-        {canAI && <Btn variant="gold" icon={Sparkles} small onClick={() => setAiOpen(true)}><span className="hidden sm:inline">ButcherAI</span></Btn>}
+        {canAI && <Btn variant="gold" icon={Sparkles} small label="ButcherAI" onClick={() => setAiOpen(true)}><span className="hidden sm:inline">ButcherAI</span></Btn>}
         <button onClick={() => setOpen(open === "notif" ? null : "notif")} aria-label="Notifications" className="relative w-9 h-9 rounded-lg flex items-center justify-center hover:bg-stone-100 active:scale-95 transition-all">
           <Bell size={16} style={{ color: C.ink }} />
           {notifications.length > 0 && <span className="absolute top-1 right-1 min-w-[16px] h-4 px-1 rounded-full f-mono text-[9px] font-bold flex items-center justify-center" style={{ background: C.danger, color: "#fff" }}>{notifications.length}</span>}
@@ -696,6 +720,9 @@ function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate,
             </div>
             <button onClick={() => { setOpen(null); onPassword(); }} className="w-full text-left flex items-center gap-2.5 px-4 py-2.5 f-body text-sm hover:bg-stone-50" style={{ color: C.ink }}>
               <KeyRound size={14} /> Change password
+            </button>
+            <button onClick={() => { setOpen(null); onSessions(); }} className="w-full text-left flex items-center gap-2.5 px-4 py-2.5 f-body text-sm hover:bg-stone-50" style={{ color: C.ink }}>
+              <ShieldCheck size={14} /> Signed-in devices
             </button>
             <button onClick={() => { setOpen(null); onOfflinePin(); }} className="w-full text-left flex items-center gap-2.5 px-4 py-2.5 f-body text-sm hover:bg-stone-50" style={{ color: C.ink }}>
               <KeyRound size={14} /> Offline PIN (this till)

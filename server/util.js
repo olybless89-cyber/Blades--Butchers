@@ -38,8 +38,8 @@ export function errorHandler(err, req, res, _next) {
     return res.status(409).json({ error: which || "That record already exists." });
   }
   if (err.code === "23514") return res.status(409).json({ error: "That change would break a stock or data rule." });
-  console.error(err);
-  res.status(500).json({ error: "Something went wrong on the server." });
+  console.error(JSON.stringify({ at: new Date().toISOString(), level: "error", id: req.id, method: req.method, path: req.path, user: req.user?.id, error: String(err?.stack || err) }));
+  res.status(500).json({ error: `Something went wrong on the server. If it keeps happening, quote reference ${String(req.id || "").slice(0, 8)}.` });
 }
 
 const dateFmt = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: TZ });

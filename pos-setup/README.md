@@ -30,7 +30,7 @@ Not supported from a browser: network (LAN/Wi-Fi IP) receipt printers without a 
 ## 2. Launcher
 
 1. Copy `BladeOS-POS.bat` to the till (e.g. the Desktop).
-2. Right-click → **Edit**: set `BLADEOS_URL` to your BladeOS address and `PRIMARY_WIDTH` to the main screen's width.
+2. Right-click → **Edit**: check `PRIMARY_WIDTH` matches the main screen width (the address is already set to https://bladesbutchers-pos.up.railway.app).
 3. Double-click it. The till opens full screen and the customer screen opens on the second display.
 4. To install it: open Command Prompt in that folder and run `BladeOS-POS.bat install`. This adds a **BladeOS POS** icon
    on the Desktop and in the Start menu, and starts BladeOS with Windows.

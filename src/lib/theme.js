@@ -7,13 +7,13 @@ export const C = {
   burgundy: "#7A2331",
   burgundyDark: "#591A24",
   burgundyLight: "#9C3A49",
-  gold: "#B8863E",
+  gold: "#8A6528",   // deepened from #B8863E so gold text and white-on-gold pass WCAG AA
   goldLight: "#D4A85F",
   ink: "#221C17",
-  muted: "#8A8175",
+  muted: "#6B6358",   // WCAG AA (4.5:1+) on cream, parchment and white
   mutedLight: "#B5AC9E",
-  ok: "#4A7856",
-  warn: "#B8863E",
+  ok: "#3E6B4A",
+  warn: "#8A6528",
   danger: "#A3372F",
   border: "#E7E0D3",
   line: "#EEE7D9",

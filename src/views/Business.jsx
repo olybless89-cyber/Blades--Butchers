@@ -602,9 +602,9 @@ function ChecklistEditor({ checklists, actions, onClose }) {
               <div className="min-w-0"><div className="f-body text-sm font-medium" style={{ color: C.ink }}>{c.name}</div>
                 <div className="f-body text-xs" style={{ color: C.muted }}>{c.frequency} · {plural(c.items.length, "check")}{c.active ? "" : " · retired"}</div></div>
               <div className="flex gap-1.5 shrink-0">
-                {c.active && <Btn small variant="ghost" icon={Pencil} onClick={() => start(c)} />}
+                {c.active && <Btn label="Edit checklist" small variant="ghost" icon={Pencil} onClick={() => start(c)} />}
                 {c.active
-                  ? <Btn small variant="ghost" icon={Archive} onClick={() => actions.updateChecklist(c.id, { active: false }, `${c.name} retired`)} />
+                  ? <Btn label="Retire checklist" small variant="ghost" icon={Archive} onClick={() => actions.updateChecklist(c.id, { active: false }, `${c.name} retired`)} />
                   : <Btn small variant="ghost" icon={RotateCcw} onClick={() => actions.updateChecklist(c.id, { active: true }, `${c.name} restored`)}>Restore</Btn>}
               </div>
             </div>

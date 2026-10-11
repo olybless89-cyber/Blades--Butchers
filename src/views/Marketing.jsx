@@ -72,8 +72,8 @@ export function MarketingView({ data, actions, permit }) {
               <td className="px-5 py-3 f-mono text-sm font-semibold" style={{ color: C.ok }}>{c.budget ? `${(c.revenue / c.budget).toFixed(2)}x` : "—"}</td>
               <td className="px-5 py-3">
                 {canEdit && <div className="flex gap-1 justify-end">
-                  <Btn small variant="ghost" icon={Pencil} onClick={() => setModal({ kind: "campaign", item: c })} />
-                  <Btn small variant="ghost" icon={Trash2} onClick={() => setConfirm({ kind: "campaign", item: c })} />
+                  <Btn label="Edit campaign" small variant="ghost" icon={Pencil} onClick={() => setModal({ kind: "campaign", item: c })} />
+                  <Btn label="Delete campaign" small variant="ghost" icon={Trash2} onClick={() => setConfirm({ kind: "campaign", item: c })} />
                 </div>}
               </td>
             </tr>

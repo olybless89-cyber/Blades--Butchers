@@ -80,7 +80,7 @@ export function SectionHeader({ eyebrow, title, action }) {
   );
 }
 
-export function Btn({ children, onClick, variant = "primary", icon: Icon, small, disabled, full, busy, type = "button" }) {
+export function Btn({ children, onClick, variant = "primary", icon: Icon, small, disabled, full, busy, type = "button", label }) {
   const styles = {
     primary: { background: C.burgundy, color: "#fff" },
     gold: { background: C.gold, color: "#fff" },
@@ -94,6 +94,8 @@ export function Btn({ children, onClick, variant = "primary", icon: Icon, small,
       type={type}
       onClick={onClick}
       disabled={off}
+      aria-label={label}
+      title={label}
       className={`f-body inline-flex items-center justify-center gap-1.5 rounded-lg font-semibold whitespace-nowrap
         transition-all duration-150 hover:opacity-90 hover:shadow-sm active:scale-[0.97]
         focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1

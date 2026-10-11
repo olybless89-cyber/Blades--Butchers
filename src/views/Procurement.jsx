@@ -56,9 +56,9 @@ export function ProcurementView({ data, actions, permit }) {
             <div className="flex flex-wrap gap-1.5">
               {s.active && canEdit && <Btn small variant="ghost" icon={FileText} onClick={() => setModal({ kind: "invoice", supplier: s })}>Invoice</Btn>}
               {s.active && canPay && s.balance > 0 && <Btn small variant="gold" icon={Banknote} onClick={() => setModal({ kind: "payment", supplier: s })}>Pay</Btn>}
-              {s.active && canEdit && <Btn small variant="ghost" icon={Pencil} onClick={() => setModal({ kind: "supplier", supplier: s })} />}
+              {s.active && canEdit && <Btn label="Edit supplier" small variant="ghost" icon={Pencil} onClick={() => setModal({ kind: "supplier", supplier: s })} />}
               {canEdit && (s.active
-                ? <Btn small variant="ghost" icon={Archive} disabled={s.balance > 0} onClick={() => actions.updateSupplier(s.id, { active: false }, `${s.name} retired`)} />
+                ? <Btn label="Archive supplier" small variant="ghost" icon={Archive} disabled={s.balance > 0} onClick={() => actions.updateSupplier(s.id, { active: false }, `${s.name} retired`)} />
                 : <Btn small variant="ghost" icon={RotateCcw} onClick={() => actions.updateSupplier(s.id, { active: true }, `${s.name} restored`)}>Restore</Btn>)}
               {s.entries.length > 0 && (
                 <Btn small variant="ghost" icon={open === s.id ? ChevronUp : ChevronDown} onClick={() => setOpen(open === s.id ? null : s.id)}>History</Btn>
@@ -75,7 +75,7 @@ export function ProcurementView({ data, actions, permit }) {
                     <span className="f-mono text-sm font-semibold shrink-0" style={{ color: e.kind === "invoice" ? C.danger : C.ok }}>{e.kind === "invoice" ? "+" : "−"}{nairaFmt(e.amount)}</span>
                   </div>
                 ))}
-                <p className="f-body text-[10px]" style={{ color: C.mutedLight }}>Latest 10 entries</p>
+                <p className="f-body text-[10px]" style={{ color: C.muted }}>Latest 10 entries</p>
               </div>
             )}
           </Card>

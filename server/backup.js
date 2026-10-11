@@ -436,7 +436,11 @@ export async function scheduledTick() {
 }
 
 export function startScheduler() {
-  const tick = () => scheduledTick().catch((e) => console.error("Backup scheduler:", e.message));
+  const tick = () => {
+    scheduledTick().catch((e) => console.error("Backup scheduler:", e.message));
+    // Housekeeping: sign-in records are kept 90 days after they end (enough to investigate an incident), then removed.
+    pool.query("DELETE FROM user_sessions WHERE expires_at < now() - interval '90 days'").catch(() => {});
+  };
   setTimeout(tick, 60e3).unref();
   setInterval(tick, 15 * 60e3).unref();
 }

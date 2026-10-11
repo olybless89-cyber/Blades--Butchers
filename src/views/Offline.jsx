@@ -164,7 +164,7 @@ export function SyncModal({ user, canManage, onClose, onSynced }) {
               {it.status === "error" && (
                 <div className="flex gap-1 shrink-0">
                   <Btn small variant="ghost" icon={RotateCcw} onClick={async () => { await retryItem(it.id); load(); }}>Retry</Btn>
-                  {canManage && <Btn small variant="danger" icon={Trash2} onClick={async () => { if (window.confirm(`Remove ${KIND[it.kind].toLowerCase()} ${it.label} from this till without uploading it? Record it by hand if it really happened.`)) { await outbox.remove(it.id); load(); } }} />}
+                  {canManage && <Btn label="Remove from this till" small variant="danger" icon={Trash2} onClick={async () => { if (window.confirm(`Remove ${KIND[it.kind].toLowerCase()} ${it.label} from this till without uploading it? Record it by hand if it really happened.`)) { await outbox.remove(it.id); load(); } }} />}
                 </div>
               )}
             </div>

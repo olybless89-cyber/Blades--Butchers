@@ -1,13 +1,13 @@
 import express from "express";
 import { z } from "zod";
 import { query, tx } from "./db.js";
-import { authRoutes, loadUser, requireAuth, requirePerm, requirePasswordChange, hashPassword, publicUser, passwordRule, rolesOf } from "./auth.js";
+import { authRoutes, loadUser, requireAuth, requirePerm, requirePasswordChange, hashPassword, publicUser, passwordRule, rolesOf, checkPassword, endSessions } from "./auth.js";
 import { controlRoutes, requestAdjustment } from "./controls.js";
 import { buildState } from "./state.js";
 import { addStock, allocateStock, transferStock, returnAllocations } from "./stock.js";
 import { openTill, operationRoutes } from "./operations.js";
 import { businessRoutes } from "./business.js";
-import { posRoutes, recordPayment } from "./pos.js";
+import { posRoutes, recordPayment, businessProfile } from "./pos.js";
 import { ROLES, LEADERSHIP_ROLES, COMBINABLE_ROLES, ORDER_FLOW, can, PROCESSING_SKUS, CONTENT_STATUSES } from "../src/shared/permissions.js";
 import { ah, parse, audit, bad, notFound, conflict, HttpError, round2, round3, fmtDateTime } from "./util.js";
 
@@ -19,13 +19,29 @@ export function apiRouter() {
   const r = express.Router();
 
   // Mutations must be JSON — together with SameSite=Lax cookies this blocks cross-site form CSRF.
-  r.use((req, _res, next) => {
+  r.use((req, res, next) => {
     // DELETE is exempt: browsers can't send it cross-site without a CORS preflight, and it has no body.
     if (!["GET", "HEAD", "DELETE"].includes(req.method) && !req.is("application/json")) {
       return next(new HttpError(415, "Requests must be JSON."));
     }
+    // A browser always says where a request came from; refuse changes started by any other site.
+    const origin = req.get("origin");
+    if (origin && !["GET", "HEAD"].includes(req.method)) {
+      let host = null;
+      try { host = new URL(origin).host; } catch { /* malformed → refused below */ }
+      if (host !== req.get("host")) return next(new HttpError(403, "Request refused: it came from another website."));
+    }
+    // Business data is never kept in browser or proxy caches.
+    res.set("Cache-Control", "no-store");
     next();
   });
+
+  /** For the home page and privacy notice: the details already printed on every receipt, nothing more. */
+  r.get("/public/profile", ah(async (_req, res) => {
+    const p = await businessProfile();
+    res.set("Cache-Control", "public, max-age=300").json({ name: p.name, tagline: p.tagline, address: p.address, phone: p.phone, email: p.email });
+  }));
+
   r.use(loadUser);
   r.use(requirePasswordChange);
 
@@ -299,17 +315,41 @@ export function apiRouter() {
       name: z.string().trim().min(2).max(80),
       phone: z.string().trim().regex(/^[+\d][\d\s-]{6,19}$/, "looks invalid").optional().or(z.literal("")),
       area: z.string().trim().max(60).optional(),
+      marketingOk: z.boolean().optional(),
     }), req.body);
     const out = await tx(async (db) => {
       const n = (await db.query("SELECT nextval('customer_code_seq') AS n")).rows[0].n;
       const { rows } = await db.query(
-        "INSERT INTO customers (code, name, phone, area) VALUES ($1,$2,$3,$4) RETURNING id, code, name",
-        [`CUST-${n}`, b.name, b.phone || null, b.area || null]
+        "INSERT INTO customers (code, name, phone, area, marketing_ok) VALUES ($1,$2,$3,$4,$5) RETURNING id, code, name",
+        [`CUST-${n}`, b.name, b.phone || null, b.area || null, !!b.marketingOk]
       );
-      await audit(db, req.user.id, `Added customer ${b.name}`, rows[0].code);
+      await audit(db, req.user.id, `Added customer ${b.name}`, `${rows[0].code}${b.marketingOk ? ", agreed to marketing" : ""}`);
       return rows[0];
     });
     res.status(201).json(out);
+  }));
+
+  /** Marketing consent (NDPA 2023): recorded when given, withdrawn whenever the customer asks. */
+  r.patch("/customers/:id", requirePerm("customers.edit"), ah(async (req, res) => {
+    const b = parse(z.object({ marketingOk: z.boolean() }), req.body);
+    const { rows } = await query("UPDATE customers SET marketing_ok = $2 WHERE id = $1 AND erased_at IS NULL RETURNING code, name", [req.params.id, b.marketingOk]);
+    if (!rows[0]) throw notFound("Customer not found.");
+    await audit(null, req.user.id, `${b.marketingOk ? "Recorded marketing consent for" : "Withdrew marketing consent for"} ${rows[0].name}`, rows[0].code);
+    res.json({ ok: true });
+  }));
+
+  /** Right to erasure: the person's details go; their sales stay (tax records) without a name or number. */
+  r.post("/customers/:id/erase", requirePerm("customers.erase"), ah(async (req, res) => {
+    const out = await tx(async (db) => {
+      const c = (await db.query("SELECT * FROM customers WHERE id = $1 FOR UPDATE", [req.params.id])).rows[0];
+      if (!c || c.erased_at) throw notFound("Customer not found.");
+      await db.query("UPDATE customers SET name = 'Erased customer', phone = NULL, area = NULL, marketing_ok = FALSE, erased_at = now() WHERE id = $1", [c.id]);
+      await db.query("UPDATE orders SET note = NULL WHERE customer_id = $1 AND note IS NOT NULL", [c.id]);
+      await db.query("DELETE FROM pos_held WHERE customer_id = $1", [c.id]);
+      await audit(db, req.user.id, "Erased a customer's personal data on request", c.code);
+      return { code: c.code };
+    });
+    res.json(out);
   }));
 
   /* ------------------------------------------------------------ setup: products */
@@ -604,6 +644,7 @@ export function apiRouter() {
   r.post("/users", requirePerm("users.manage"), ah(async (req, res) => {
     const b = parse(z.object({ name: z.string().trim().min(2).max(80), email: z.string().trim().email(), role: z.enum(ROLES), extraRoles: extraRolesSchema, password: passwordRule }), req.body);
     onlyOwnerFor(req.user, b.role);
+    checkPassword(b.password, b.email);
     const extras = cleanExtras(b.role, b.extraRoles);
     // A password set by someone else is temporary: the new user must replace it at first sign-in.
     const { rows } = await query(
@@ -630,6 +671,7 @@ export function apiRouter() {
         if (owners === 0) throw conflict("There must be at least one active Owner.");
       }
       const reset = !!b.password;
+      if (reset) checkPassword(b.password, u.email);
       if (b.resetMfa) {
         if (u.id === req.user.id) throw bad("You can't reset your own two-step sign-in. Use a recovery code, or ask the Owner.");
         await db.query("UPDATE users SET totp_enabled = FALSE, totp_secret = NULL, totp_last_step = NULL, recovery_codes = '{}' WHERE id = $1", [u.id]);
@@ -646,6 +688,11 @@ export function apiRouter() {
         b.resetMfa && "two-step sign-in reset (must set up again)",
         b.name && b.name !== u.name && `name → ${b.name}`,
       ].filter(Boolean);
+      // Anything that changes what this person may do ends their open sessions: they sign in again under the new rules.
+      if (reset || b.resetMfa || rolesChanged || b.active === false) {
+        const ended = await endSessions(db, u.id, u.id === req.user.id ? req.sessionId : null);
+        if (ended) ch.push(`signed out of ${ended} session${ended === 1 ? "" : "s"}`);
+      }
       if (ch.length) await audit(db, req.user.id, `Updated user ${u.email}`, ch.join(", "));
       return { ok: true };
     });

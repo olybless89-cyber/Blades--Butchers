@@ -15,7 +15,7 @@ const PERM_LABELS = {
   "stock.adjust.direct": "Post write-offs & corrections directly", "products.edit": "Add & edit products, prices, costs",
   "pos.use": "POS sales", "orders.view": "View orders", "orders.edit": "Update orders (status, paid, cancel before delivery)",
   "refunds.request": "Request refunds", "refunds.approve": "Approve refunds (not own)", "refunds.direct": "Issue refunds directly",
-  "customers.view": "View customers", "customers.edit": "Add customers", "delivery.view": "Delivery dashboard",
+  "customers.view": "View customers", "customers.edit": "Add customers & record marketing consent", "customers.erase": "Erase a customer's personal data on request", "delivery.view": "Delivery dashboard",
   "procurement.view": "View suppliers", "procurement.edit": "Add suppliers & record invoices", "payables.pay": "Record supplier payments",
   "marketing.view": "View marketing", "marketing.edit": "Edit campaigns & content",
   "setup.manage": "Business Setup: locations & ranches", "users.manage": "Manage staff accounts", "audit.view": "Audit trail",
@@ -56,7 +56,7 @@ export function AdminView({ data, actions, permit, user }) {
                 <td className="px-5 py-3">{u.active && u.mustChangePassword ? <StatusPill status="Pending" /> : <StatusPill status={u.active ? "Active" : "Inactive"} />}
                   {u.active && u.mustChangePassword && <div className="f-body text-[10px] mt-0.5" style={{ color: C.muted }}>temporary password</div>}
                   {u.mfaEnabled && <div className="f-body text-[10px] mt-0.5 flex items-center gap-1" style={{ color: C.ok }}><ShieldCheck size={10} /> two-step on</div>}</td>
-                <td className="px-5 py-3 text-right"><Btn small variant="ghost" icon={Pencil} onClick={() => setEditing(u)} /></td>
+                <td className="px-5 py-3 text-right"><Btn label="Edit user" small variant="ghost" icon={Pencil} onClick={() => setEditing(u)} /></td>
               </tr>
             ))}
           </Table>

@@ -91,8 +91,8 @@ export function InventoryView({ data, actions, permit }) {
                   {it.expiredQty > 0 && <div className="f-body text-[10px] mt-1 whitespace-nowrap" style={{ color: C.danger }}>{qtyFmt(it.expiredQty, it.unit)} expired</div>}</td>
                 <td className="px-5 py-3">
                   <div className="flex gap-1 justify-end">
-                    {canEdit && <Btn small variant="ghost" icon={PackagePlus} onClick={() => setModal({ type: "adjust", sku: it.sku })} />}
-                    {canPrice && <Btn small variant="ghost" icon={Pencil} onClick={() => setModal({ type: "product", sku: it.sku })} />}
+                    {canEdit && <Btn label="Receive or adjust stock" small variant="ghost" icon={PackagePlus} onClick={() => setModal({ type: "adjust", sku: it.sku })} />}
+                    {canPrice && <Btn label="Edit product" small variant="ghost" icon={Pencil} onClick={() => setModal({ type: "product", sku: it.sku })} />}
                   </div>
                 </td>
               </tr>

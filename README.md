@@ -57,7 +57,7 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
 
 ## How it works
 
-- **Auth:** email + password (bcrypt), 12-hour JWT in an `HttpOnly`, `Secure`, `SameSite=Lax` cookie. Mutations must be JSON
+- **Auth:** email + password (bcrypt), a 12-hour signed cookie (`HttpOnly`, `Secure`, `SameSite=Lax`) naming a server-side session that can be ended at any time. Mutations must be JSON
   (CSRF guard). 10 failed logins per 15 min → locked out temporarily. Passwords are 10+ characters; any password set by
   someone else is temporary and must be replaced at first sign-in. Idle sessions sign out after 30 minutes (shared tills).
 - **Roles & controls** (`src/shared/permissions.js`, enforced by the API, mirrored in the menu):
@@ -165,10 +165,31 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
 pos-setup/  BladeOS-POS.bat (Windows till launcher + `install` for Desktop/Start-menu icon) · README.md (Licon / till hardware setup)
 server/   index.js · pos.js (sales, discounts, tender, held tickets, X/Z) · routes.js (writes) · controls.js (approvals, refunds) · operations.js (tills, temps, counts, trace, limits)
           business.js (purchase orders, payment reconciliation, HACCP) · backup.js + restore.js (backups)
-          state.js (reads/KPIs) · stock.js (lots, FEFO) · auth.js + totp.js (sign-in) · seed.js · migrate.js
+          state.js (reads/KPIs) · stock.js (lots, FEFO) · auth.js + totp.js (sign-in, sessions) · seed.js · migrate.js
 migrations/  numbered .sql files, applied once each on boot
-src/      App.jsx (shell) · views/ · components/ · lib/ · shared/permissions.js
+src/      App.jsx (shell) · views/ (Home.jsx = the home page) · components/ · lib/ · shared/permissions.js
 ```
+
+## Security, privacy and accessibility
+
+- **Home page:** an ordinary browser opens on the BladeOS home page (what the system does, staff help, privacy notice);
+  *Sign in* goes to the sign-in form. Tills (a till number set under *Devices*), the installed app and shortcut links open
+  straight on sign-in. The page shows no business data — only the name, address, phone and email from *Business Setup*.
+- **Sessions:** every sign-in is recorded server-side. Signing out ends it for real; changing a password signs you out
+  everywhere else; a password reset, role change, two-step reset or deactivation by an administrator ends all of that
+  person's sessions at once. *Account menu → Signed-in devices* lists them and can sign out every other device.
+  Sessions last 12 hours at most; idle screens sign out after 30 minutes.
+- **Passwords:** at least 10 characters, and common passwords, simple runs, the business name or the person's email are refused.
+- **Audit trail** is append-only: the database refuses any edit or deletion of it, even directly.
+- **Requests from other websites** that try to change data are refused (Origin check, JSON-only, SameSite cookies).
+  API answers are never cached. Headers: CSP, HSTS (1 year), nosniff, frame protection, Permissions-Policy
+  (USB serial for the till only). Every response carries an `X-Request-Id`; server errors show the first 8 characters
+  so a report from the shop floor can be found in the Railway logs, which hold one JSON line per error or slow request.
+- **Customer data (Nigeria Data Protection Act 2023):** marketing consent is recorded when a customer is added and can be
+  withdrawn from their profile; *Download their data* gives them everything held; the Owner or MD can *Erase personal data*
+  (name, phone, area, order notes) — the sales stay in the accounts as "Erased customer". Card numbers are never stored.
+- **Accessibility:** every main screen passes an automated WCAG 2.1 AA scan (axe-core) — colour contrast, labels on
+  icon-only buttons, one heading structure, skip link on the home page.
 
 ## Operations
 - **Backups:** with the `BACKUP_*` variables set, BladeOS makes a consistent copy of every table each night after 02:00 Lagos

@@ -49,8 +49,11 @@ if ("serviceWorker" in navigator && import.meta.env.PROD) {
       });
       setInterval(() => reg.update().catch(() => {}), 30 * 60e3);
     }).catch((e) => console.warn("Service worker not registered:", e.message));
+    // Reload only when a new version takes over a page an older one was running — never on the very first visit,
+    // which would wipe whatever the person had started typing on the sign-in form.
+    const hadController = !!navigator.serviceWorker.controller;
     let reloading = false;
-    navigator.serviceWorker.addEventListener("controllerchange", () => { if (!reloading) { reloading = true; window.location.reload(); } });
+    navigator.serviceWorker.addEventListener("controllerchange", () => { if (hadController && !reloading) { reloading = true; window.location.reload(); } });
   });
 }
 window.addEventListener("beforeinstallprompt", (e) => {

@@ -68,6 +68,7 @@ export const PERMISSIONS = {
   "refunds.direct":         EXEC,
   "customers.view":         [...MGMT, "Cashier", "Delivery Manager", "Marketing Manager"],
   "customers.edit":         [...MGMT, "Cashier", "Marketing Manager"],
+  "customers.erase":        EXEC,     // erase a customer's personal data on request (NDPA 2023); sales stay
   "delivery.view":          [...MGMT, "Delivery Manager"],
 
   // Procurement
@@ -151,6 +152,19 @@ export const RESTOCK_REASON = "Rung up in error — goods never left the counter
 export const REFUND_REASONS = [RESTOCK_REASON, "Quality complaint", "Short weight / overcharged", "Wrong item supplied", "Late or failed delivery"];
 
 export const PASSWORD_MIN = 10;
+/** Passwords attackers try first (NIST SP 800-63B: refuse common, guessable and context-specific passwords). */
+const COMMON = ["1234567890", "0123456789", "12345678910", "qwertyuiop", "1q2w3e4r5t", "abcdefghij", "iloveyou12", "football12", "welcome123", "admin12345", "nigeria123", "abuja12345", "lagos12345", "changeme123", "letmein123", "trustno1234", "monkey12345", "princess12", "sunshine12", "superman12", "qwerty1234", "qwerty12345", "asdfghjkl1", "zaq12wsxcde", "1qaz2wsx3edc"];
+/** Returns why a password is too easy to guess, or null when it's fine. */
+export function weakPassword(pw = "", email = "") {
+  const p = pw.toLowerCase();
+  const letters = p.replace(/[^a-z]/g, "");
+  const local = email.toLowerCase().split("@")[0];
+  if (/^(.)\1+$/.test(p) || "01234567890123456789".includes(p) || "abcdefghijklmnopqrstuvwxyz".includes(p)) return "is a simple run of characters";
+  if (COMMON.includes(p) || p.includes("password") || p.includes("passw0rd")) return "is one of the most commonly used passwords";
+  if (["bladesbutchers", "bladesandbutchers", "bladeos", "butcher", "butchers"].includes(letters)) return "is just the business name";
+  if (local && local.length >= 4 && (p === local || p.includes(local) && letters.length - local.replace(/[^a-z]/g, "").length < 3)) return "is too close to the email address";
+  return null;
+}
 
 // POS
 export const DISCOUNT_REASONS = ["Loyal customer", "Bulk purchase", "Short-dated stock", "Price match", "Staff purchase", "Service recovery"];

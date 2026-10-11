@@ -123,7 +123,7 @@ export function Dashboard({ data, onOpenReport, onNavigate }) {
               </div>
             ))}
           </div>
-          <p className="f-body text-[10px] mt-4" style={{ color: C.mutedLight }}>Last 30 days · change vs previous 30</p>
+          <p className="f-body text-[10px] mt-4" style={{ color: C.muted }}>Last 30 days · change vs previous 30</p>
         </Card>
       </div>
 

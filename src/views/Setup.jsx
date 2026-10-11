@@ -77,8 +77,8 @@ export function SetupView({ data, actions, permit }) {
                   <td className="px-5 py-3">
                     <div className="flex gap-1 justify-end">
                       {!p.active && <StatusPill status="Inactive" />}
-                      {canProducts && p.active && <Btn small variant="ghost" icon={Pencil} onClick={() => setModal({ kind: "product", item: p })} />}
-                      {canProducts && !locked && <Btn small variant="ghost" icon={p.active ? Archive : RotateCcw} onClick={() => toggle(p)} />}
+                      {canProducts && p.active && <Btn label="Edit product" small variant="ghost" icon={Pencil} onClick={() => setModal({ kind: "product", item: p })} />}
+                      {canProducts && !locked && <Btn label={p.active ? "Retire product" : "Restore product"} small variant="ghost" icon={p.active ? Archive : RotateCcw} onClick={() => toggle(p)} />}
                     </div>
                   </td>
                 </tr>
@@ -118,8 +118,8 @@ export function SetupView({ data, actions, permit }) {
                   <td className="px-5 py-3"><StatusPill status={x.active ? "Active" : "Inactive"} /></td>
                   <td className="px-5 py-3">
                     <div className="flex gap-1 justify-end">
-                      {x.active && <Btn small variant="ghost" icon={Pencil} onClick={() => setModal({ kind: "place", item: x })} />}
-                      <Btn small variant="ghost" icon={x.active ? Archive : RotateCcw} onClick={() => toggle(x)} disabled={x.active && count > 0} />
+                      {x.active && <Btn label="Edit" small variant="ghost" icon={Pencil} onClick={() => setModal({ kind: "place", item: x })} />}
+                      <Btn label={x.active ? "Retire" : "Restore"} small variant="ghost" icon={x.active ? Archive : RotateCcw} onClick={() => toggle(x)} disabled={x.active && count > 0} />
                     </div>
                   </td>
                 </tr>

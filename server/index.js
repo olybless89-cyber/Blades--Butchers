@@ -4,6 +4,7 @@ import compression from "compression";
 import cookieParser from "cookie-parser";
 import path from "node:path";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { pool } from "./db.js";
 import { migrate } from "./migrate.js";
@@ -29,7 +30,7 @@ app.use(helmet({
       "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       "font-src": ["'self'", "https://fonts.gstatic.com"],
       "img-src": ["'self'", "data:", "blob:"],
-      "connect-src": ["'self'"],
+      "connect-src": ["'self'", "https://fonts.googleapis.com", "https://fonts.gstatic.com"], // the service worker keeps the fonts for offline use
       "frame-ancestors": ["'self'"],
       "base-uri": ["'self'"],
       "form-action": ["'self'"],
@@ -39,7 +40,28 @@ app.use(helmet({
     },
   },
   crossOriginEmbedderPolicy: false,
+  strictTransportSecurity: { maxAge: 31536000, includeSubDomains: true },
 }));
+// Only the hardware the till really uses: USB serial (printer, scale) here, nothing else for anyone.
+app.use((_req, res, next) => {
+  res.set("Permissions-Policy", "serial=(self), camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+  next();
+});
+// Every request gets an id (echoed to the browser) so a cashier's "something went wrong" can be found in the logs.
+// Errors and slow requests are logged as one JSON line each — Railway keeps and searches them.
+app.use((req, res, next) => {
+  const id = req.get("x-request-id")?.slice(0, 64) || crypto.randomUUID();
+  const t0 = process.hrtime.bigint();
+  req.id = id;
+  res.set("X-Request-Id", id);
+  res.on("finish", () => {
+    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+    if (res.statusCode >= 500 || ms > 2000 || (req.path.startsWith("/api/auth/") && res.statusCode === 429)) {
+      console.log(JSON.stringify({ at: new Date().toISOString(), level: res.statusCode >= 500 ? "error" : "warn", id, method: req.method, path: req.path, status: res.statusCode, ms: Math.round(ms), ip: req.ip }));
+    }
+  });
+  next();
+});
 app.use(compression());
 app.use(cookieParser());
 app.use(express.json({ limit: "100kb" }));
@@ -70,6 +92,10 @@ if (fs.existsSync(path.join(DIST, "index.html"))) {
 }
 
 app.use(errorHandler);
+
+// Never die silently: log anything unexpected with a timestamp (Railway restarts the service if it exits).
+process.on("unhandledRejection", (err) => console.error(JSON.stringify({ at: new Date().toISOString(), level: "error", unhandledRejection: String(err?.stack || err) })));
+process.on("uncaughtException", (err) => { console.error(JSON.stringify({ at: new Date().toISOString(), level: "fatal", uncaughtException: String(err?.stack || err) })); process.exit(1); });
 
 async function start() {
   await migrate();

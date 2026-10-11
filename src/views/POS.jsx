@@ -259,7 +259,7 @@ export function POSView({ data, actions, permit }) {
                 <h3 className="f-display text-base" style={{ color: C.ink }}>Ticket{cart.length ? ` · ${cart.length} line${cart.length === 1 ? "" : "s"}` : ""}</h3>
                 <div className="flex gap-1.5">
                   <Btn small variant="ghost" icon={PlayCircle} onClick={() => setModal("held")}>Held{pos.held.length ? ` (${pos.held.length})` : ""}</Btn>
-                  {permit("customers.edit") && <Btn small variant="ghost" icon={UserPlus} onClick={() => setModal("customer")} />}
+                  {permit("customers.edit") && <Btn small variant="ghost" icon={UserPlus} label="Add customer" onClick={() => setModal("customer")} />}
                 </div>
               </div>
               <Select value={customerId} onChange={(e) => setCustomerId(e.target.value)} aria-label="Customer">
@@ -315,7 +315,7 @@ export function POSView({ data, actions, permit }) {
               <div className="hidden lg:block">
                 <PayButton total={priced.total} disabled={!cart.length || deliveryInvalid} onClick={startPay} />
               </div>
-              <p className="hidden lg:block f-body text-[10px] text-center" style={{ color: C.mutedLight }}>F2 search · F4 pay · F8 hold · F9 discount</p>
+              <p className="hidden lg:block f-body text-[10px] text-center" style={{ color: C.muted }}>F2 search · F4 pay · F8 hold · F9 discount</p>
             </div>
           </div>
 
@@ -415,9 +415,9 @@ function LineModal({ line, product, available, reasons, reason: curReason, onClo
       <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); if (!err && !dErr && !needReason) onSave({ qty: round3(q), scale: line.scale && q === line.qty, discount: disc ? { type: dType, value: dv } : undefined }, disc ? reason : null); }}>
         <Field label={kg ? "Weight (KG)" : `Quantity (${line.unit})`} error={err}>
           <div className="flex gap-2">
-            {!kg && <Btn variant="ghost" icon={Minus} onClick={() => setQty(String(Math.max(1, q - 1)))} />}
+            {!kg && <Btn label="Decrease quantity" variant="ghost" icon={Minus} onClick={() => setQty(String(Math.max(1, q - 1)))} />}
             <Input mono type="number" step={kg ? "0.001" : "1"} min="0" value={qty} onChange={(e) => setQty(e.target.value)} aria-label="Line quantity" />
-            {!kg && <Btn variant="ghost" icon={Plus} onClick={() => setQty(String(q + 1))} />}
+            {!kg && <Btn label="Increase quantity" variant="ghost" icon={Plus} onClick={() => setQty(String(q + 1))} />}
           </div>
         </Field>
         <div>

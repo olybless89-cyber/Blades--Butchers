@@ -1,8 +1,9 @@
+import crypto from "node:crypto";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { query } from "./db.js";
-import { can, PASSWORD_MIN, MFA_REQUIRED_ROLES } from "../src/shared/permissions.js";
+import { can, PASSWORD_MIN, MFA_REQUIRED_ROLES, weakPassword } from "../src/shared/permissions.js";
 import { ah, audit, parse, HttpError } from "./util.js";
 import { newSecret, verifyTotp, otpauthUri, encryptSecret, decryptSecret, newRecoveryCodes } from "./totp.js";
 
@@ -39,6 +40,11 @@ export const publicUser = (u) => ({
 });
 
 export const passwordRule = z.string().min(PASSWORD_MIN, `must be at least ${PASSWORD_MIN} characters`).max(200);
+/** Refuse passwords that are common, a simple run, the business name or the person's email. */
+export function checkPassword(pw, email) {
+  const why = pw && weakPassword(pw, email);
+  if (why) throw new HttpError(400, `That password ${why}. Choose something harder to guess — a short phrase works well.`);
+}
 
 /* ---- in-memory throttles: passwords 10 failures / 15 min per IP+email; codes 6 / 15 min per account ---- */
 const attempts = new Map();
@@ -57,9 +63,23 @@ setInterval(() => {
   for (const [k, a] of attempts) if (Date.now() - a.first > WINDOW) attempts.delete(k);
 }, WINDOW).unref();
 
-function setSession(res, user, { mfa = false } = {}) {
-  const token = jwt.sign({ sub: user.id, mfa }, SECRET, { expiresIn: `${SESSION_HOURS}h` });
+/** Start a session: a row in user_sessions (so it can be ended server-side) and a signed cookie that names it. */
+async function setSession(req, res, user, { mfa = false } = {}) {
+  const sid = crypto.randomUUID();
+  await query(
+    "INSERT INTO user_sessions (id, user_id, mfa, expires_at, ip, user_agent) VALUES ($1, $2, $3, now() + make_interval(hours => $4), $5, $6)",
+    [sid, user.id, mfa, SESSION_HOURS, req.ip || null, String(req.get("user-agent") || "").slice(0, 200) || null]);
+  if (req.sessionId) await query("UPDATE user_sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL", [req.sessionId]);
+  req.sessionId = sid;
+  const token = jwt.sign({ sub: user.id, sid }, SECRET, { expiresIn: `${SESSION_HOURS}h` });
   res.cookie(COOKIE, token, { httpOnly: true, sameSite: "lax", secure: isProd, maxAge: SESSION_HOURS * 3600 * 1000, path: "/" });
+}
+
+/** End every session a user has (password reset, deactivation, role change…), optionally keeping one. */
+export async function endSessions(db, userId, keep = null) {
+  const { rowCount } = await (db?.query ? db : { query }).query(
+    "UPDATE user_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL AND ($2::uuid IS NULL OR id <> $2::uuid)", [userId, keep]);
+  return rowCount;
 }
 
 /** Loads req.user from the session cookie (valid token, active account, and — if enrolled — a completed second step). */
@@ -68,10 +88,15 @@ export const loadUser = ah(async (req, _res, next) => {
   if (token) {
     try {
       const claims = jwt.verify(token, SECRET);
-      if (claims.purpose) throw new Error("not a session token");
-      const { rows } = await query("SELECT * FROM users WHERE id = $1 AND active", [claims.sub]);
+      if (claims.purpose || !claims.sid) throw new Error("not a session token");
+      const { rows } = await query(
+        `SELECT u.*, s.mfa AS session_mfa, s.last_seen AS session_seen FROM user_sessions s JOIN users u ON u.id = s.user_id
+         WHERE s.id = $1 AND s.user_id = $2 AND s.revoked_at IS NULL AND s.expires_at > now() AND u.active`, [claims.sid, claims.sub]);
       const u = rows[0];
-      if (u && (!u.totp_enabled || claims.mfa)) { req.user = u; req.user.roles = rolesOf(u); }
+      if (u && (!u.totp_enabled || u.session_mfa)) {
+        req.user = u; req.user.roles = rolesOf(u); req.sessionId = claims.sid;
+        if (Date.now() - new Date(u.session_seen).getTime() > 60e3) query("UPDATE user_sessions SET last_seen = now() WHERE id = $1", [claims.sid]).catch(() => {});
+      }
     } catch {
       /* invalid/expired token → treated as logged out */
     }
@@ -147,7 +172,7 @@ export function authRoutes(router) {
     }
     await query("UPDATE users SET last_login_at = now() WHERE id = $1", [user.id]);
     await audit(null, user.id, "Signed in", null);
-    setSession(res, user);
+    await setSession(req, res, user);
     res.json({ user: publicUser(user) });
   }));
 
@@ -167,7 +192,7 @@ export function authRoutes(router) {
     attempts.delete(key);
     await query("UPDATE users SET last_login_at = now() WHERE id = $1", [user.id]);
     await audit(null, user.id, "Signed in", "with two-step verification");
-    setSession(res, user, { mfa: true });
+    await setSession(req, res, user, { mfa: true });
     res.json({ user: publicUser(user) });
   }));
 
@@ -197,7 +222,8 @@ export function authRoutes(router) {
     const hashes = await Promise.all(codes.map((c) => bcrypt.hash(c, 10)));
     await query("UPDATE users SET totp_enabled = TRUE, totp_last_step = $2, recovery_codes = $3 WHERE id = $1", [u.id, step, hashes]);
     await audit(null, u.id, "Turned on two-step sign-in", null);
-    setSession(res, u, { mfa: true });
+    await endSessions(null, u.id, req.sessionId);
+    await setSession(req, res, u, { mfa: true });
     res.json({ recoveryCodes: codes });
   }));
 
@@ -209,14 +235,28 @@ export function authRoutes(router) {
     if (!(await checkSecondFactor(req.user, b))) throw new HttpError(400, "That code isn't right.");
     await query("UPDATE users SET totp_enabled = FALSE, totp_secret = NULL, totp_last_step = NULL, recovery_codes = '{}' WHERE id = $1", [req.user.id]);
     await audit(null, req.user.id, "Turned off two-step sign-in", null);
-    setSession(res, req.user);
+    await setSession(req, res, req.user);
     res.json({ ok: true });
   }));
 
-  router.post("/auth/logout", (req, res) => {
+  router.post("/auth/logout", ah(async (req, res) => {
+    if (req.sessionId) await query("UPDATE user_sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL", [req.sessionId]);
     res.clearCookie(COOKIE, { path: "/" });
     res.json({ ok: true });
-  });
+  }));
+
+  /** Where this account is signed in, and a way to end every other session (a lost phone, a shared PC). */
+  router.get("/auth/sessions", requireAuth, ah(async (req, res) => {
+    const { rows } = await query(
+      `SELECT id, created_at, last_seen, ip, user_agent FROM user_sessions
+       WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now() ORDER BY last_seen DESC`, [req.user.id]);
+    res.json(rows.map((s) => ({ current: s.id === req.sessionId, since: s.created_at, lastSeen: s.last_seen, ip: s.ip, device: s.user_agent })));
+  }));
+  router.post("/auth/sessions/end-others", requireAuth, ah(async (req, res) => {
+    const n = await endSessions(null, req.user.id, req.sessionId);
+    if (n) await audit(null, req.user.id, "Signed out other devices", `${n} session${n === 1 ? "" : "s"} ended`);
+    res.json({ ended: n });
+  }));
 
   router.get("/auth/me", (req, res) => {
     res.json({ user: req.user ? publicUser(req.user) : null });
@@ -226,8 +266,10 @@ export function authRoutes(router) {
     const { current, next } = parse(z.object({ current: z.string().min(1), next: passwordRule }), req.body);
     if (!(await bcrypt.compare(current, req.user.password_hash))) throw new HttpError(400, "Current password is incorrect.");
     if (current === next) throw new HttpError(400, "The new password must be different from the current one.");
+    checkPassword(next, req.user.email);
     await query("UPDATE users SET password_hash = $1, must_change_password = FALSE, updated_at = now() WHERE id = $2", [await hashPassword(next), req.user.id]);
-    await audit(null, req.user.id, "Changed own password", null);
+    const ended = await endSessions(null, req.user.id, req.sessionId);
+    await audit(null, req.user.id, "Changed own password", ended ? `signed out of ${ended} other session${ended === 1 ? "" : "s"}` : null);
     res.json({ ok: true });
   }));
 }
@@ -240,6 +282,7 @@ export async function breakGlassMfa() {
     "UPDATE users SET totp_enabled = FALSE, totp_secret = NULL, totp_last_step = NULL, recovery_codes = '{}' WHERE lower(email) = lower($1) RETURNING id",
     [email]);
   if (rows[0]) {
+    await endSessions(null, rows[0].id);
     await audit(null, null, `Two-step sign-in reset by RESET_MFA_FOR`, email);
     console.warn(`⚠️  Two-step sign-in reset for ${email}. Remove RESET_MFA_FOR from the environment now.`);
   }

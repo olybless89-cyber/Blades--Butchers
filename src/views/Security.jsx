@@ -111,3 +111,42 @@ export function MfaEnrol({ required, onDone, onCancel }) {
     </form>
   );
 }
+
+/** Where this account is signed in — with a way to end every other session (a lost phone, a shared PC left signed in). */
+export function SessionsPanel({ notify }) {
+  const [list, setList] = useState(null);
+  const [error, setError] = useState(null);
+  const [busy, run] = useBusy();
+  const load = () => api("/auth/sessions").then(setList).catch((e) => setError(e.message));
+  useEffect(() => { load(); }, []);
+  const device = (ua = "") => {
+    if (!ua) return "Unknown device";
+    const os = /Windows/.test(ua) ? "Windows" : /Android/.test(ua) ? "Android" : /iPhone|iPad/.test(ua) ? "iPhone / iPad" : /Mac OS/.test(ua) ? "Mac" : /Linux/.test(ua) ? "Linux" : "Device";
+    const br = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "Browser";
+    return `${br} on ${os}`;
+  };
+  const when = (d) => new Date(d).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Africa/Lagos" });
+  const others = (list || []).filter((s) => !s.current).length;
+  return (
+    <div>
+      {error && <p className="f-body text-xs mb-3" style={{ color: C.danger }}>{error}</p>}
+      {!list ? <p className="f-body text-sm" style={{ color: C.muted }}><Loader2 size={14} className="inline animate-spin mr-1" /> Loading…</p> : (
+        <ul className="space-y-2 mb-5">
+          {list.map((s, i) => (
+            <li key={i} className="rounded-lg px-3 py-2.5 flex items-center justify-between gap-3" style={{ background: C.cream }}>
+              <span className="min-w-0">
+                <span className="f-body text-sm font-medium block truncate" style={{ color: C.ink }}>{device(s.device)}{s.current && <span className="ml-2 f-body text-[10px] uppercase tracking-wide" style={{ color: C.ok }}>This device</span>}</span>
+                <span className="f-mono text-xs block truncate" style={{ color: C.muted }}>Last active {when(s.lastSeen)}{s.ip ? ` · ${s.ip}` : ""}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <Btn full variant="danger" busy={busy} disabled={!others} onClick={() => run(async () => {
+        try { const r = await api("/auth/sessions/end-others", { method: "POST", body: {} }); notify?.(`Signed out of ${r.ended} other device${r.ended === 1 ? "" : "s"}`); await load(); }
+        catch (e) { setError(e.message); }
+      })}>{others ? `Sign out of ${others} other device${others === 1 ? "" : "s"}` : "No other devices signed in"}</Btn>
+      <p className="f-body text-xs mt-3" style={{ color: C.muted }}>Changing your password also signs you out everywhere else.</p>
+    </div>
+  );
+}

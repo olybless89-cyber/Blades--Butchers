@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Plus, X, Download, Phone, MapPin, Search, UserPlus, Check, ArrowRight, Printer, Ban, Loader2, ShoppingCart, Undo2, Wallet, Lock, FileText } from "lucide-react";
+import { Plus, X, Download, Phone, MapPin, Search, UserPlus, Check, ArrowRight, Printer, Ban, Loader2, ShoppingCart, Undo2, Wallet, Lock, FileText, Trash2, Megaphone } from "lucide-react";
 import { C, nairaFmt, qtyFmt, initials, exportCsv } from "../lib/theme.js";
 import { ORDER_FLOW, REFUND_REASONS, RESTOCK_REASON } from "../shared/permissions.js";
 import { SectionHeader, Btn, StatusPill, Modal, Field, Input, Select, Card, Table, Empty, useBusy } from "../components/ui.jsx";
@@ -271,7 +271,7 @@ export function CustomersView({ data, actions, permit }) {
     : customers;
   return (
     <div>
-      {selected && <CustomerProfile customer={customers.find((c) => c.id === selected)} onClose={() => setSelected(null)} />}
+      {selected && <CustomerProfile customer={customers.find((c) => c.id === selected)} actions={actions} permit={permit} onClose={() => setSelected(null)} />}
       {adding && <AddCustomerModal onClose={() => setAdding(false)} onSave={actions.addCustomer} />}
       <SectionHeader eyebrow="Sales" title="Customer CRM" action={<>
         <div className="flex items-center gap-2 rounded-lg px-3 py-1.5 w-56 border" style={{ background: "#fff", borderColor: C.border }}>
@@ -300,8 +300,15 @@ export function CustomersView({ data, actions, permit }) {
   );
 }
 
-function CustomerProfile({ customer, onClose }) {
+function CustomerProfile({ customer, onClose, actions, permit }) {
+  const [confirmErase, setConfirmErase] = useState(false);
+  const [busy, run] = useBusy();
   if (!customer) return null;
+  /** Subject access request: everything held about this customer, as a spreadsheet. */
+  const download = () => exportCsv(`customer-${customer.code}.csv`, [
+    { record: "Customer", code: customer.code, name: customer.name, phone: customer.phone, area: customer.area, marketing: customer.marketingOk ? "Agreed" : "Not agreed", order: "", date: "", amount: "", items: "" },
+    ...customer.history.map((o) => ({ record: "Order", code: customer.code, name: "", phone: "", area: "", marketing: "", order: o.id, date: o.date, amount: o.amount, items: o.product })),
+  ]);
   return (
     <Modal title={customer.name} onClose={onClose} wide>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
@@ -316,6 +323,7 @@ function CustomerProfile({ customer, onClose }) {
         <span className="f-mono text-xs">{customer.code}</span>
         {customer.phone !== "—" && <a href={`tel:${customer.phone.replace(/\s/g, "")}`} className="flex items-center gap-1.5 hover:underline"><Phone size={13} /> {customer.phone}</a>}
         {customer.area !== "—" && <span className="flex items-center gap-1.5"><MapPin size={13} /> {customer.area}, Abuja</span>}
+        <span className="flex items-center gap-1.5"><Megaphone size={13} /> {customer.marketingOk ? "Agreed to marketing" : "No marketing messages"}</span>
       </div>
       {customer.favourites.length > 0 && (<>
         <h4 className="f-body text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.muted }}>Favourite Products</h4>
@@ -340,6 +348,27 @@ function CustomerProfile({ customer, onClose }) {
           ))}
         </div>
       )}
+      <div className="mt-6 pt-4 border-t" style={{ borderColor: C.line }}>
+        <h4 className="f-body text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.muted }}>Customer's data rights</h4>
+        <div className="flex flex-wrap gap-2">
+          <Btn small variant="ghost" icon={Download} onClick={download}>Download their data</Btn>
+          {permit?.("customers.edit") && (
+            <Btn small variant="ghost" icon={Megaphone} busy={busy} onClick={() => run(() => actions.updateCustomer(customer.id, { marketingOk: !customer.marketingOk }, customer.marketingOk ? "Marketing consent withdrawn" : "Marketing consent recorded"))}>
+              {customer.marketingOk ? "Withdraw marketing consent" : "Record marketing consent"}
+            </Btn>
+          )}
+          {permit?.("customers.erase") && !confirmErase && <Btn small variant="danger" icon={Trash2} onClick={() => setConfirmErase(true)}>Erase personal data</Btn>}
+        </div>
+        {confirmErase && (
+          <div className="mt-3 rounded-lg p-3" style={{ background: "#F5E4E2" }}>
+            <p className="f-body text-xs mb-3" style={{ color: C.ink }}>This removes {customer.name}'s name, phone, area and order notes for good. Their sales stay in the accounts as "Erased customer". It can't be undone.</p>
+            <div className="flex gap-2">
+              <Btn small variant="danger" icon={Trash2} busy={busy} onClick={() => run(async () => { if (await actions.eraseCustomer(customer.id)) onClose(); })}>Erase for good</Btn>
+              <Btn small variant="ghost" onClick={() => setConfirmErase(false)}>Keep</Btn>
+            </div>
+          </div>
+        )}
+      </div>
     </Modal>
   );
 }
@@ -348,12 +377,13 @@ export function AddCustomerModal({ onClose, onSave, onCreated }) {
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [area, setArea] = useState("");
+  const [marketingOk, setMarketingOk] = useState(false);
   const [busy, run] = useBusy();
   const phoneBad = phone && !/^[+\d][\d\s-]{6,19}$/.test(phone.trim());
   const submit = (e) => {
     e.preventDefault();
     run(async () => {
-      const r = await onSave({ name: name.trim(), phone: phone.trim(), area: area.trim() || undefined });
+      const r = await onSave({ name: name.trim(), phone: phone.trim(), area: area.trim() || undefined, marketingOk });
       if (r) { onCreated?.(r); onClose(); }
     });
   };
@@ -366,6 +396,10 @@ export function AddCustomerModal({ onClose, onSave, onCreated }) {
           <Input list="cust-areas" value={area} onChange={(e) => setArea(e.target.value)} maxLength={60} placeholder="e.g. Wuse II" />
           <datalist id="cust-areas">{AREAS.map((a) => <option key={a} value={a} />)}</datalist>
         </Field>
+        <label className="flex items-start gap-2.5 f-body text-sm cursor-pointer" style={{ color: C.ink }}>
+          <input type="checkbox" checked={marketingOk} onChange={(e) => setMarketingOk(e.target.checked)} className="mt-0.5 w-4 h-4" style={{ accentColor: C.burgundy }} />
+          <span>Customer agrees to receive offers and news<span className="block text-xs" style={{ color: C.muted }}>Only tick if they said yes. They can change their mind any time.</span></span>
+        </label>
         <Btn type="submit" icon={Check} full busy={busy} disabled={name.trim().length < 2 || phoneBad}>Save Customer</Btn>
       </form>
     </Modal>

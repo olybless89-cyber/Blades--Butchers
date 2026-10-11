@@ -57,7 +57,7 @@ export function ColdChainCard({ data, actions, permit }) {
           );
         })}
       </div>
-      <p className="f-body text-[11px] mt-3" style={{ color: C.mutedLight }}>Record each cold room and freezer at least twice a day. A reading outside the safe range needs the corrective action taken.</p>
+      <p className="f-body text-[11px] mt-3" style={{ color: C.muted }}>Record each cold room and freezer at least twice a day. A reading outside the safe range needs the corrective action taken.</p>
     </Card>
   );
 }
@@ -136,14 +136,14 @@ export function CountsCard({ data, actions, permit }) {
             </div>
             <div className="flex gap-1 shrink-0">
               {c.status === "Open" && canCount && <Btn small onClick={() => setCounting(c.code)}>Count</Btn>}
-              {c.status === "Open" && canSchedule && <Btn small variant="ghost" icon={Ban} onClick={() => actions.cancelCount(c.code)} />}
+              {c.status === "Open" && canSchedule && <Btn label="Cancel count" small variant="ghost" icon={Ban} onClick={() => actions.cancelCount(c.code)} />}
               {c.status === "Submitted" && c.detail && <Btn small variant="ghost" onClick={() => setDetail(c)}>View</Btn>}
               {c.status !== "Open" && !c.detail && <StatusPill status={c.status === "Submitted" ? "Published" : "Inactive"} />}
             </div>
           </div>
         ))}
       </div>
-      <p className="f-body text-[11px] mt-3" style={{ color: C.mutedLight }}>Counts are blind: the counter never sees the system figure. Differences become correction requests for a manager to approve.</p>
+      <p className="f-body text-[11px] mt-3" style={{ color: C.muted }}>Counts are blind: the counter never sees the system figure. Differences become correction requests for a manager to approve.</p>
     </Card>
   );
 }
@@ -224,13 +224,13 @@ export function BatchesModal({ item, permit, onTrace, onClose }) {
               <div className="flex items-center gap-2 shrink-0">
                 <span className="f-mono text-sm" style={{ color: C.ink }}>{qtyFmt(l.qty, item.unit)}</span>
                 <StatusPill status={lotPill(l.status)} />
-                {permit("trace.view") && <Btn small variant="ghost" icon={Search} onClick={() => onTrace(l.code)} />}
+                {permit("trace.view") && <Btn label="Trace batch" small variant="ghost" icon={Search} onClick={() => onTrace(l.code)} />}
               </div>
             </div>
           ))}
         </div>
       )}
-      <p className="f-body text-[11px] mt-3" style={{ color: C.mutedLight }}>Sales take the earliest use-by date first. Expired batches can't be sold — write them off.</p>
+      <p className="f-body text-[11px] mt-3" style={{ color: C.muted }}>Sales take the earliest use-by date first. Expired batches can't be sold — write them off.</p>
     </Modal>
   );
 }
