@@ -13,7 +13,7 @@ rem
 rem  It opens the till full screen with silent receipt printing (to the Windows
 rem  default printer) and the customer screen on the second monitor.
 rem ============================================================================
-set "BLADEOS_URL=https://YOUR-APP.up.railway.app"
+set "BLADEOS_URL=https://bladesbutchers-pos.up.railway.app"
 set "PRIMARY_WIDTH=1366"
 set "PROFILE=%LOCALAPPDATA%\BladeOS-POS"
 
