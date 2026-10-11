@@ -13,7 +13,7 @@ function GettingStarted({ data, onNavigate }) {
   const steps = [
     { label: "Review products, prices and costs", hint: "Business Setup → Products", route: "setup", done: (() => { try { return localStorage.getItem("bladeos.setupVisited") === "1"; } catch { return false; } })() },
     { label: "Add your suppliers", hint: "Suppliers → Add Supplier", route: "procurement", done: (data.suppliers || []).length > 0 },
-    { label: "Enter opening stock for each cold room", hint: "Inventory → Receive / Adjust", route: "inventory", done: (data.inventory || []).some((i) => i.qty > 0) },
+    { label: "Enter opening stock for each cold room", hint: "Inventory → Opening stock", route: "inventory", done: (data.inventory || []).some((i) => i.qty > 0) },
     { label: "Register the herd on each ranch", hint: "Livestock → Add Animal", route: "ranch", done: (data.livestock || []).length > 0 },
     { label: "Create staff accounts", hint: "Administration → Add User", route: "admin", done: (data.users || []).length > 1 },
   ];

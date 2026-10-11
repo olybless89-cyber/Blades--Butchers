@@ -4,6 +4,7 @@ import { C, nairaFmt, kgFmt, qtyFmt, stockStatus } from "../lib/theme.js";
 import { WASTAGE_REASONS, CORRECTION_REASONS } from "../shared/permissions.js";
 import { ColdChainCard, CountsCard, BatchesModal, TraceModal } from "./Operations.jsx";
 import { KpiCard, SectionHeader, Btn, StatusPill, Modal, Field, Input, Select, Card, Table, useBusy } from "../components/ui.jsx";
+import { api } from "../lib/api.js";
 
 export function InventoryView({ data, actions, permit }) {
   const inventory = (data.inventory || []).filter((i) => i.trackStock !== false); // services and uncounted items have no stock to manage
@@ -25,6 +26,7 @@ export function InventoryView({ data, actions, permit }) {
 
   return (
     <div>
+      {modal?.type === "opening" && <OpeningStockModal inventory={inventory} locations={locations} onClose={() => setModal(null)} actions={actions} />}
       {modal?.type === "transfer" && <TransferModal inventory={inventory} locations={locations} initialSku={modal.sku} onClose={() => setModal(null)} onSubmit={actions.transfer} />}
       {modal?.type === "adjust" && <AdjustModal inventory={inventory} locations={locations} initialSku={modal.sku} onClose={() => setModal(null)} onSubmit={actions.adjust}
         canReceive={canReceive} canAdjust={canAdjust} direct={adjustDirect} />}
@@ -34,6 +36,7 @@ export function InventoryView({ data, actions, permit }) {
 
       <SectionHeader eyebrow="Inventory" title="Stock & Cold Room" action={(canEdit || canTransfer || permit("trace.view")) && (<>
         {permit("trace.view") && <Btn icon={Search} small variant="ghost" onClick={() => setModal({ type: "trace", lot: "" })}>Trace Batch</Btn>}
+        {canReceive && <Btn icon={Layers} small onClick={() => setModal({ type: "opening" })}>Opening stock</Btn>}
         {canEdit && <Btn icon={PackagePlus} small variant="ghost" onClick={() => setModal({ type: "adjust" })}>{canReceive && canAdjust ? "Receive / Adjust" : canReceive ? "Receive Stock" : "Adjust Stock"}</Btn>}
         {canTransfer && <Btn icon={Truck} small onClick={() => setModal({ type: "transfer" })}>Transfer Stock</Btn>}
       </>)} />
@@ -298,6 +301,63 @@ function ProductModal({ item, onClose, onSubmit }) {
       </div>
       <p className="f-body text-xs mb-5" style={{ color: C.muted }}>Price changes apply to new sales only and are recorded in the audit trail.</p>
       <Btn icon={Check} disabled={!valid} busy={busy} onClick={submit} full>Save Changes</Btn>
+    </Modal>
+  );
+}
+
+/**
+ * Enter today's stock for every product on one screen (the first day, or after a full count): each quantity is
+ * recorded as a receipt into the chosen location with the same reference. Blank rows are skipped.
+ */
+function OpeningStockModal({ inventory, locations, onClose, actions }) {
+  const [loc, setLoc] = useState(locations.includes("Display Chiller") ? "Display Chiller" : locations[0]);
+  const [ref, setRef] = useState(`Opening stock ${new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "Africa/Lagos" })}`);
+  const [qty, setQty] = useState({});
+  const [progress, setProgress] = useState(null);
+  const [errors, setErrors] = useState([]);
+  const filled = inventory.filter((i) => Number(qty[i.sku]) > 0);
+  const bad = inventory.filter((i) => qty[i.sku] && (!(Number(qty[i.sku]) > 0) || (i.unit !== "KG" && !Number.isInteger(Number(qty[i.sku])))));
+  const save = async () => {
+    setErrors([]);
+    const errs = [];
+    for (const [n, i] of filled.entries()) {
+      setProgress(`Saving ${n + 1} of ${filled.length} — ${i.name}`);
+      try { await api("/inventory/adjust", { method: "POST", body: { sku: i.sku, location: loc, kind: "receipt", qty: Number(qty[i.sku]), note: ref.trim() } }); }
+      catch (e) { errs.push(`${i.name}: ${e.message}`); }
+    }
+    setProgress(null);
+    await actions.refresh();
+    if (errs.length) setErrors(errs);
+    else { actions.notify(`Stock recorded for ${filled.length} product${filled.length === 1 ? "" : "s"}`); onClose(); }
+  };
+  return (
+    <Modal title="Opening stock" onClose={progress ? () => {} : onClose} wide>
+      <p className="f-body text-sm mb-4" style={{ color: C.muted }}>Count what's in the chiller or cold room and type the amounts. Leave a row blank if there's none. Every amount is recorded as stock received, under one reference.</p>
+      <div className="grid sm:grid-cols-2 gap-3 mb-4">
+        <Field label="Where it is"><Select value={loc} onChange={(e) => setLoc(e.target.value)}>{locations.map((l) => <option key={l}>{l}</option>)}</Select></Field>
+        <Field label="Reference"><Input value={ref} onChange={(e) => setRef(e.target.value)} maxLength={200} /></Field>
+      </div>
+      <div className="rounded-xl border divide-y max-h-[50vh] overflow-y-auto mb-4" style={{ borderColor: C.border }}>
+        {inventory.map((i) => (
+          <label key={i.sku} className="flex items-center gap-3 px-3 py-2" style={{ borderColor: C.line }}>
+            {i.image ? <img src={i.image} alt="" className="w-9 h-9 rounded object-cover shrink-0" style={{ background: C.cream2 }} onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} /> : <span className="w-9 h-9 shrink-0" />}
+            <span className="flex-1 min-w-0">
+              <span className="f-body text-sm font-medium block truncate" style={{ color: C.ink }}>{i.name}</span>
+              <span className="f-mono text-[11px]" style={{ color: C.muted }}>now {qtyFmt(i.qty, i.unit)}</span>
+            </span>
+            <span className="flex items-center gap-1.5 shrink-0">
+              <span className="w-24 block"><Input mono type="number" min="0" step={i.unit === "KG" ? "0.001" : "1"} inputMode="decimal" value={qty[i.sku] ?? ""} aria-label={`${i.name} quantity`}
+                onChange={(e) => setQty((q) => ({ ...q, [i.sku]: e.target.value }))} /></span>
+              <span className="f-mono text-xs w-9" style={{ color: C.muted }}>{i.unit}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+      {errors.length > 0 && <div className="f-body text-xs mb-3 rounded-lg px-3 py-2" style={{ background: "#F5E4E2", color: C.danger }}>{errors.map((e) => <div key={e}>{e}</div>)}</div>}
+      {progress && <p className="f-body text-xs mb-3" style={{ color: C.muted }}>{progress}</p>}
+      <Btn full icon={Check} busy={!!progress} disabled={!filled.length || bad.length > 0 || ref.trim().length < 2} onClick={save}>
+        {bad.length ? "Check the highlighted amounts" : `Record stock for ${filled.length} product${filled.length === 1 ? "" : "s"}`}
+      </Btn>
     </Modal>
   );
 }

@@ -58,6 +58,9 @@ export function POSView({ data, actions, permit }) {
   const pos = data.pos || { held: [], profile: {}, discountReasons: [], myDiscountPct: 0 };
   const bySku = useMemo(() => Object.fromEntries(inventory.map((p) => [p.sku, p])), [inventory]);
   const tillOpen = true; // no opening step: the first sale opens the till
+  const canReceive = permit("stock.receive");
+  // Nothing counted has stock yet (a new install, before deliveries are recorded): say so plainly.
+  const noStock = inventory.some((p) => p.trackStock !== false) && inventory.filter((p) => p.trackStock !== false).every((p) => (p.sellable ?? p.qty) <= 0);
 
   const [cart, setCart] = useState([]);
   const [ticketDiscount, setTicketDiscount] = useState(null);
@@ -225,6 +228,12 @@ export function POSView({ data, actions, permit }) {
                 {search && <button type="button" aria-label="Clear search" onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 p-1"><X size={14} style={{ color: C.muted }} /></button>}
               </div>
             </form>
+            {noStock && (
+              <div className="f-body text-xs px-4 py-2 flex flex-wrap items-center justify-between gap-2" style={{ background: "#F6EEDD", color: C.ink }} data-no-stock>
+                <span>No stock has been recorded yet, so meat items can't be sold. {canReceive ? "Enter today's stock once and every item opens up." : "Ask a manager to record today's stock."}</span>
+                {canReceive && <Btn small onClick={() => { window.location.hash = "#inventory"; }}>Enter opening stock</Btn>}
+              </div>
+            )}
             {scanMsg && <div role="status" className="f-body text-xs px-4 py-1.5" style={{ background: scanMsg.bad ? "#F5E4E2" : "#E7F0E9", color: scanMsg.bad ? C.danger : C.ok }}>{scanMsg.text}</div>}
             <div className="flex gap-1.5 px-3 py-2 border-b overflow-x-auto" style={{ borderColor: C.line }}>
               {cats.map((c) => (
@@ -237,12 +246,15 @@ export function POSView({ data, actions, permit }) {
                 const avail = availableOf(p);
                 const out = avail <= 0;
                 return (
-                  <button key={p.sku} disabled={out} onClick={() => (p.unit === "KG" ? setPicking(p) : addLine(p, 1))}
-                    className="rounded-xl p-3 text-left border hover:shadow-md transition-all active:scale-[0.97] disabled:opacity-45 disabled:cursor-not-allowed min-h-[92px] flex flex-col"
-                    style={{ background: picking?.sku === p.sku ? "#F3E4E6" : C.cream, borderColor: picking?.sku === p.sku ? C.burgundy : C.border }}>
-                    {p.image && <ProductPhoto src={p.image} />}
+                  <button key={p.sku} aria-disabled={out || undefined} data-out={out || undefined}
+                    onClick={() => (out
+                      ? setScanMsg({ bad: true, text: `${p.name} is out of stock.${canReceive ? " Record a delivery in Inventory → Receive Stock." : " Ask a manager to record the delivery."}` })
+                      : p.unit === "KG" ? setPicking(p) : addLine(p, 1))}
+                    className={`rounded-xl p-3 text-left border transition-all min-h-[92px] flex flex-col ${out ? "cursor-not-allowed" : "hover:shadow-md active:scale-[0.97]"}`}
+                    style={{ background: picking?.sku === p.sku ? "#F3E4E6" : out ? "#FBF9F5" : C.cream, borderColor: picking?.sku === p.sku ? C.burgundy : C.border }}>
+                    {p.image && <ProductPhoto src={p.image} out={out} />}
                     <div className="flex items-start justify-between gap-1.5 mb-1">
-                      <span className="f-body text-sm font-semibold leading-tight" style={{ color: C.ink }}>{p.name}</span>
+                      <span className="f-body text-sm font-semibold leading-tight" style={{ color: out ? C.muted : C.ink }}>{p.name}</span>
                       {p.plu ? <span className="f-mono text-[10px] shrink-0 px-1 rounded" style={{ color: C.muted, background: "#fff" }}>{p.plu}</span> : null}
                     </div>
                     <div className="f-mono text-[11px] mb-auto" style={{ color: out ? C.danger : C.muted }}>{out ? "Out of stock" : p.trackStock === false ? "Always available" : qtyFmt(avail, p.unit)}</div>
@@ -777,8 +789,14 @@ export function TillReportModal({ code, actions, onClose }) {
 }
 
 /** A product's photo on its POS tile; hidden if the file is missing, so the tile still works. */
-function ProductPhoto({ src }) {
+function ProductPhoto({ src, out }) {
   const [ok, setOk] = useState(true);
   if (!ok) return null;
-  return <img src={src} alt="" loading="lazy" onError={() => setOk(false)} className="-mx-3 -mt-3 mb-2 h-20 object-cover rounded-t-xl shrink-0" style={{ width: "calc(100% + 1.5rem)", maxWidth: "none", background: C.cream2 }} />;
+  return (
+    <div className="-mx-3 -mt-3 mb-2 h-24 relative shrink-0 rounded-t-xl overflow-hidden" style={{ width: "calc(100% + 1.5rem)", background: C.cream2 }}>
+      <img src={src} alt="" loading="lazy" decoding="async" onError={() => setOk(false)} className="w-full h-full object-cover"
+        style={out ? { filter: "grayscale(0.6)", opacity: 0.75 } : undefined} />
+      {out && <span className="absolute left-2 top-2 f-body text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full" style={{ background: C.danger, color: "#fff" }}>Out of stock</span>}
+    </div>
+  );
 }

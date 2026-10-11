@@ -392,7 +392,7 @@ export default function App() {
       onSignedIn={async (snap) => { setOfflineGate(false); setOfflineSession(true); setData(await withPending(snap.state, snap.user.id)); setUser(snap.user); setRoute(null); }}
       onTryOnline={async () => { try { const r = await api("/auth/me"); await setOnline(true); setOfflineGate(false); setUser(r.user); } catch (e) { if (e.status !== 0) { await setOnline(true); setOfflineGate(false); } } }} />
   );
-  if (!user) return (<>{toast && <Toast toast={toast} onDone={() => setToast(null)} />}<LoginScreen pending={sync.pending} onLogin={(u) => { setUser(u); setRoute(null); }} /></>);
+  if (!user) return (<>{toast && <Toast toast={toast} onDone={() => setToast(null)} />}<LoginScreen pending={sync.pending} onLogin={(u) => { setUser(u); setRoute(window.location.hash.slice(1) || null); }} /></>);
   if (!user.mustChangePassword && user.mfaSetupRequired) return (
     <div className="min-h-screen flex items-center justify-center px-4 py-8" style={{ background: C.charcoal }}>
       <div className="w-full max-w-md rounded-2xl p-6" style={{ background: "#fff" }}>
