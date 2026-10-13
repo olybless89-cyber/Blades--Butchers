@@ -1,13 +1,42 @@
 // Devices on this POS terminal (receipt printer, cash drawer, barcode scanner, scale, customer screen)
 // and the customer-facing display itself.
 import React, { useEffect, useRef, useState } from "react";
-import { Printer, ScanLine, Monitor, Plug, Check, Inbox, Scale as ScaleIcon, Info } from "lucide-react";
+import { Printer, ScanLine, Monitor, Plug, Check, Inbox, Scale as ScaleIcon, Info, Search } from "lucide-react";
 import { C } from "../lib/theme.js";
 import { Btn, Modal, Field, Select, Input } from "../components/ui.jsx";
 import { ScaleReader } from "../lib/scale.jsx";
 import {
-  loadDevices, saveDevices, serialSupported, choosePrinterPort, printBlocks, testBlocks, openDrawer, openCustomerDisplay, customerDisplay,
+  loadDevices, saveDevices, serialSupported, usbSupported, choosePrinterPort, pairUsbPrinter, detectPrinter, watchHardware,
+  markScannerSeen, scannerSeenAt, printBlocks, testBlocks, openDrawer, openCustomerDisplay, customerDisplay,
 } from "../lib/hardware.js";
+
+/** The printer this till will use right now, kept up to date as cables go in and out. */
+export function usePrinterStatus() {
+  const [p, setP] = useState(null);
+  const [scanAt, setScanAt] = useState(scannerSeenAt);
+  useEffect(() => {
+    let live = true;
+    const check = () => { detectPrinter().then((x) => live && setP(x)).catch(() => {}); setScanAt(scannerSeenAt()); };
+    check();
+    const off = watchHardware(check);
+    return () => { live = false; off(); };
+  }, []);
+  return { printer: p, scannerAt: scanAt };
+}
+
+/** POS header: printer and scanner at a glance. Tapping opens Devices. */
+export function HardwareStatus({ onOpen }) {
+  const { printer, scannerAt } = usePrinterStatus();
+  const dot = (ok) => <span className="inline-block w-2 h-2 rounded-full shrink-0" style={{ background: ok ? C.ok : C.gold }} />;
+  const pText = !printer ? "Printer…" : printer.direct ? `Printer: ${printer.kind === "usb" ? "USB" : "COM"} ✓` : "Printer: Windows";
+  return (
+    <button onClick={onOpen} data-hw-status title={printer ? `${printer.name}${printer.direct ? " — connected directly" : " — prints through Windows"}` : ""}
+      className="hidden sm:flex items-center gap-3 h-8 px-3 rounded-lg border f-body text-xs hover:bg-stone-50 active:scale-95 transition-all" style={{ borderColor: C.border, color: C.ink }}>
+      <span className="flex items-center gap-1.5" data-hw-printer={printer?.kind || ""}>{dot(!!printer)}<Printer size={13} />{pText}</span>
+      <span className="flex items-center gap-1.5" data-hw-scanner={scannerAt ? "seen" : ""}>{dot(!!scannerAt)}<ScanLine size={13} />{scannerAt ? "Scanner ✓" : "Scanner: scan to check"}</span>
+    </button>
+  );
+}
 
 const Section = ({ icon: Icon, title, children }) => (
   <section className="rounded-xl p-4 space-y-3" style={{ background: C.cream }}>
@@ -42,6 +71,7 @@ export function describeCode(code, inventory = [], profile = {}) {
 
 export function DevicesModal({ inventory, profile, onClose }) {
   const [d, setD] = useState(loadDevices);
+  const { printer } = usePrinterStatus();
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(null);
   const set = (patch) => { const next = { ...d, ...patch }; setD(next); saveDevices(next); };
@@ -57,7 +87,9 @@ export function DevicesModal({ inventory, profile, onClose }) {
     if (!chars) return;
     const gaps = times.slice(1).map((t, i) => t - times[i]);
     const avg = gaps.length ? gaps.reduce((s, x) => s + x, 0) / gaps.length : 0;
-    setScan({ code: chars, suffix, avg: Math.round(avg), scanner: chars.length >= 4 && avg < 40, meaning: describeCode(chars, inventory, profile) });
+    const scanner = chars.length >= 4 && avg < 40;
+    if (scanner) markScannerSeen();
+    setScan({ code: chars, suffix, avg: Math.round(avg), scanner, meaning: describeCode(chars, inventory, profile) });
     buf.current = { chars: "", times: [] };
   };
   const onScanKey = (e) => {
@@ -80,44 +112,59 @@ export function DevicesModal({ inventory, profile, onClose }) {
         </div>
 
         <Section icon={Printer} title="Receipt printer">
+          <div className="rounded-lg p-3 bg-white f-body text-sm flex items-center gap-2" data-printer-found={printer?.kind || ""} style={{ color: C.ink }}>
+            <span className="inline-block w-2.5 h-2.5 rounded-full shrink-0" style={{ background: printer?.direct ? C.ok : C.gold }} />
+            {!printer ? "Looking for the printer…" : printer.direct
+              ? <span><b>{printer.name}</b> found on {printer.kind === "usb" ? "USB" : "a COM port"} — BladeOS prints, cuts and opens the drawer directly.</span>
+              : <span><b>Printing through Windows</b> (the default printer). {printer.usbBlocked ? "The printer's Windows driver is in charge of it — that's fine." : usbSupported() || serialSupported() ? "Tap Find printer once to connect it directly." : ""}</span>}
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <Field label="Connected as">
               <Select value={d.printMode} onChange={(e) => set({ printMode: e.target.value })} aria-label="Printer connection">
-                <option value="browser">Windows printer (USB driver)</option>
-                <option value="escpos" disabled={!serialSupported()}>ESC/POS on a COM port</option>
+                <option value="auto">Find automatically (recommended)</option>
+                <option value="usb" disabled={!usbSupported()}>USB, direct (ESC/POS)</option>
+                <option value="escpos" disabled={!serialSupported()}>COM port (ESC/POS)</option>
+                <option value="browser">Windows printer (driver)</option>
               </Select>
             </Field>
             <Field label="Paper"><Select value={d.paper} onChange={(e) => set({ paper: Number(e.target.value) })} aria-label="Paper width"><option value={80}>80 mm</option><option value={58}>58 mm</option></Select></Field>
             <Field label="Copies per sale"><Select value={d.copies} onChange={(e) => set({ copies: Number(e.target.value) })} aria-label="Copies"><option value={1}>1</option><option value={2}>2 (customer + shop)</option></Select></Field>
           </div>
           <Toggle checked={d.autoPrint} onChange={(v) => set({ autoPrint: v })} label="Print the receipt automatically when a sale completes" />
-          {d.printMode === "browser" ? (
-            <Hint>Set the receipt printer as the Windows default printer. Start BladeOS with the POS launcher so receipts print without a dialog.
-              Cash drawer: in Windows → Printers → (receipt printer) → Printing preferences, set “Cash drawer: open before printing”.</Hint>
-          ) : (<>
+          {d.printMode !== "browser" && (
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
-              <Field label="Speed (baud)"><Select value={d.printerBaud} onChange={(e) => set({ printerBaud: Number(e.target.value) })} aria-label="Printer baud">
-                {[9600, 19200, 38400, 57600, 115200].map((b) => <option key={b} value={b}>{b}</option>)}</Select></Field>
-              <Btn variant="ghost" icon={Plug} busy={busy === "port"} onClick={() => run("port", async () => {
-                try { const info = await choosePrinterPort(); set({ printerPort: info }); say(true, "Printer port saved."); }
-                catch (e) { if (e?.name !== "NotFoundError") say(false, e.message); }
-              })}>{d.printerPort ? "Change COM port" : "Choose COM port"}</Btn>
+              {(d.printMode === "escpos" || printer?.kind === "serial") && <Field label="COM speed (baud)"><Select value={d.printerBaud} onChange={(e) => set({ printerBaud: Number(e.target.value) })} aria-label="Printer baud">
+                {[9600, 19200, 38400, 57600, 115200].map((b) => <option key={b} value={b}>{b}</option>)}</Select></Field>}
               <Toggle checked={d.drawerOnCash} onChange={(v) => set({ drawerOnCash: v })} label="Open drawer on cash" />
             </div>
-            <Hint>For printers that show up as a COM port (USB-serial, RS-232, Bluetooth). BladeOS sends the printer's own commands: auto-cut, QR code, drawer kick.</Hint>
-          </>)}
+          )}
           <div className="flex flex-wrap gap-2">
+            {d.printMode !== "browser" && (usbSupported() || serialSupported()) && (
+              <Btn small variant="ghost" icon={Search} busy={busy === "find"} onClick={() => run("find", async () => {
+                // USB first (the browser shows only printers); a printer that isn't on USB is on a COM port.
+                if (usbSupported() && d.printMode !== "escpos") {
+                  try { const name = await pairUsbPrinter(); say(true, `${name} connected. It reconnects by itself from now on.`); return; }
+                  catch (e) { if (e?.name !== "NotFoundError") { say(false, e.message); return; } }
+                }
+                if (serialSupported()) {
+                  try { const info = await choosePrinterPort(); set({ printerPort: info }); say(true, "Printer port saved. It reconnects by itself from now on."); }
+                  catch (e) { if (e?.name !== "NotFoundError") say(false, e.message); else say(false, "No printer chosen. Check it's switched on and plugged in, or leave it on Windows printing."); }
+                }
+              })}>Find printer</Btn>
+            )}
             <Btn small icon={Printer} busy={busy === "test"} onClick={() => run("test", async () => {
-              const r = await printBlocks(testBlocks(profile), { title: "Printer test", copies: 1 }); say(r.ok, r.ok ? "Test page sent to the printer." : r.error);
+              const r = await printBlocks(testBlocks(profile), { title: "Printer test", copies: 1 });
+              say(r.ok, r.ok ? `Test page sent${r.via === "usb" ? " over USB" : r.via === "serial" ? " to the COM port" : " to the Windows printer"}.` : r.error);
             })}>Print test page</Btn>
             <Btn small variant="ghost" icon={Inbox} busy={busy === "drawer"} onClick={() => run("drawer", async () => {
               const r = await openDrawer(); say(r.ok, r.ok ? "Drawer kick sent." : r.error);
             })}>Open cash drawer</Btn>
           </div>
+          <Hint>Licon LP100: plug in USB and switch on. On the till icon, receipts print straight away with no dialog. If it prints through Windows, make the LP100 the default printer, and in its Printing preferences set “Cash drawer: open before printing”.</Hint>
         </Section>
 
         <Section icon={ScanLine} title="Barcode scanner">
-          <Hint>USB and Bluetooth scanners type like a keyboard — no driver needed. Click the box and scan anything.</Hint>
+          <Hint>USB and Bluetooth scanners type like a keyboard — no driver, no setup. BladeOS recognises the scanner the first time anything is scanned at the POS. To check it here, click the box and scan anything.</Hint>
           <input onKeyDown={onScanKey} readOnly aria-label="Scanner test" placeholder="Click here, then scan a barcode"
             className="f-mono w-full text-sm rounded-lg px-3 py-2.5 border outline-none focus:ring-2 bg-white" style={{ borderColor: C.input, "--tw-ring-color": C.goldLight }} />
           {scan && (

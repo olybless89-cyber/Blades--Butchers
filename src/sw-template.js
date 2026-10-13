@@ -41,7 +41,7 @@ self.addEventListener("fetch", (e) => {
     return;
   }
   if (url.origin !== location.origin) return;
-  if (url.pathname.startsWith("/api") || url.pathname === "/health" || url.pathname === "/sw.js") return;
+  if (url.pathname.startsWith("/api") || url.pathname.startsWith("/downloads/") || url.pathname === "/health" || url.pathname === "/sw.js") return;
 
   // Pages: try the network briefly, fall back to the cached app.
   if (req.mode === "navigate") {

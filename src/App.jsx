@@ -1,7 +1,7 @@
 import React, { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import {
   LayoutDashboard, Beef, Scissors, Warehouse, ShoppingCart, Users, Truck, Package, Megaphone, FileBarChart,
-  Search, Bell, X, LogIn, Sparkles, ShieldCheck, Settings, ClipboardList, ClipboardCheck, Menu, LogOut, KeyRound, Loader2, RefreshCw, FileText, Landmark, ListChecks, Wallet,
+  Search, Bell, X, LogIn, Sparkles, ShieldCheck, Settings, ClipboardList, ClipboardCheck, Menu, LogOut, KeyRound, Loader2, RefreshCw, FileText, Landmark, ListChecks, Wallet, MonitorDown, Download, Check,
 } from "lucide-react";
 import { api, setUnauthorizedHandler } from "./lib/api.js";
 import { C, initials } from "./lib/theme.js";
@@ -84,6 +84,7 @@ export default function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [pwOpen, setPwOpen] = useState(false);
   const [sessOpen, setSessOpen] = useState(false);
+  const [iconOpen, setIconOpen] = useState(false);
   const [mfaOpen, setMfaOpen] = useState(false);
   const [pinOpen, setPinOpen] = useState(false);
   const [reportTab, setReportTab] = useState(null);
@@ -434,6 +435,7 @@ export default function App() {
           <PasswordForm onDone={() => { notify("Password changed"); setPwOpen(false); }} />
         </Modal>
       )}
+      {iconOpen && <DesktopIconModal onClose={() => setIconOpen(false)} />}
       {sessOpen && (
         <Modal title="Signed-in devices" onClose={() => setSessOpen(false)}>
           <SessionsPanel notify={notify} />
@@ -457,7 +459,7 @@ export default function App() {
           notifications={data.notifications} canAI={permit("ai.use")} setAiOpen={setAiOpen}
           onMenuClick={() => setMobileNavOpen(true)} onNavigate={goTo} user={user}
           onPassword={() => setPwOpen(true)} onMfa={() => setMfaOpen(true)} onPin={() => setPinOpen(true)} onLogout={logout} onRefresh={refresh} loadError={loadError}
-          onOfflinePin={() => setOffPinOpen(true)} onSync={() => setSyncOpen(true)} onSessions={() => setSessOpen(true)} pending={sync.pending + sync.errors}
+          onOfflinePin={() => setOffPinOpen(true)} onSync={() => setSyncOpen(true)} onSessions={() => setSessOpen(true)} onDesktopIcon={() => setIconOpen(true)} pending={sync.pending + sync.errors}
         />
         <OfflineBanner sync={sync} offlineSession={offlineSession} onOpen={() => setSyncOpen(true)} onSignIn={logout} />
         <UpdateBanner />
@@ -695,9 +697,7 @@ function Sidebar({ route, setRoute, mobileOpen, onClose, user, onLogout, badges 
 
 const TONE = { warn: C.warn, gold: C.gold, burgundy: C.burgundy, danger: C.danger, muted: C.muted, ok: C.ok };
 
-function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate, user, onPassword, onMfa, onPin, onLogout, onRefresh, loadError, onOfflinePin, onSync, onSessions, pending = 0, compact = false }) {
-  const [canInstall, setCanInstall] = useState(!!window.__bladeosInstall);
-  useEffect(() => { const h = () => setCanInstall(!!window.__bladeosInstall); window.addEventListener("bladeos-installable", h); return () => window.removeEventListener("bladeos-installable", h); }, []);
+function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate, user, onPassword, onMfa, onPin, onLogout, onRefresh, loadError, onOfflinePin, onSync, onSessions, onDesktopIcon, pending = 0, compact = false }) {
   const [open, setOpen] = useState(null); // "notif" | "user" | null
   const ref = useRef(null);
   useEffect(() => {
@@ -763,11 +763,9 @@ function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate,
             <button onClick={() => { setOpen(null); onSync(); }} className="w-full text-left flex items-center gap-2.5 px-4 py-2.5 f-body text-sm hover:bg-stone-50" style={{ color: C.ink }}>
               <RefreshCw size={14} /> Saved on this till{pending ? ` (${pending})` : ""}
             </button>
-            {canInstall && (
-              <button onClick={async () => { setOpen(null); await window.__bladeosInstall?.(); }} className="w-full text-left flex items-center gap-2.5 px-4 py-2.5 f-body text-sm hover:bg-stone-50" style={{ color: C.ink }}>
-                <Sparkles size={14} /> Install BladeOS app
-              </button>
-            )}
+            <button onClick={() => { setOpen(null); onDesktopIcon(); }} className="w-full text-left flex items-center gap-2.5 px-4 py-2.5 f-body text-sm hover:bg-stone-50" style={{ color: C.ink }}>
+              <MonitorDown size={14} /> Desktop icon
+            </button>
             {can(user.roles, "pos.discount") && (
               <button onClick={() => { setOpen(null); onPin(); }} className="w-full text-left flex items-center gap-2.5 px-4 py-2.5 f-body text-sm hover:bg-stone-50" style={{ color: C.ink }}>
                 <KeyRound size={14} /> {user.posPinSet ? "Change" : "Set"} till approval PIN
@@ -785,6 +783,58 @@ function TopBar({ notifications = [], canAI, setAiOpen, onMenuClick, onNavigate,
         )}
       </div>
     </header>
+  );
+}
+
+/**
+ * "Desktop icon" (account menu, everyone): the till icon for Windows (opens straight on the POS, receipts print with
+ * no dialog, printer made default) and, on any device, installing BladeOS as an app.
+ */
+function DesktopIconModal({ onClose }) {
+  const [canInstall, setCanInstall] = useState(!!window.__bladeosInstall);
+  useEffect(() => { const h = () => setCanInstall(!!window.__bladeosInstall); window.addEventListener("bladeos-installable", h); return () => window.removeEventListener("bladeos-installable", h); }, []);
+  const installed = window.matchMedia?.("(display-mode: standalone)").matches || window.matchMedia?.("(display-mode: window-controls-overlay)").matches;
+  const ua = navigator.userAgent;
+  const windows = /Windows/.test(ua), ios = /iPhone|iPad|iPod/.test(ua), android = /Android/.test(ua);
+  const [got, setGot] = useState(false);
+  const download = async () => {
+    // Fetched, not navigated to, so the installed app's offline cache never answers instead of the server.
+    const r = await fetch("/downloads/BladeOS-Till-Setup.cmd", { cache: "no-store" });
+    if (!r.ok) throw new Error("Couldn't download the setup file — check the internet connection.");
+    const url = URL.createObjectURL(await r.blob());
+    const a = Object.assign(document.createElement("a"), { href: url, download: "BladeOS-Till-Setup.cmd" });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    setGot(true);
+  };
+  const [busy, run] = useBusy();
+  const Step = ({ n, children }) => <li className="flex gap-2.5"><span className="w-5 h-5 shrink-0 rounded-full f-mono text-[11px] flex items-center justify-center" style={{ background: C.gold, color: "#fff" }}>{n}</span><span>{children}</span></li>;
+  return (
+    <Modal title="Desktop icon" onClose={onClose}>
+      <div className="space-y-4 f-body text-sm" style={{ color: C.ink }} data-desktop-icon>
+        <section className="rounded-xl p-4 space-y-3" style={{ background: C.cream }}>
+          <h4 className="font-semibold flex items-center gap-2"><MonitorDown size={15} style={{ color: C.burgundy }} />Till computer (Windows)</h4>
+          <p className="text-xs" style={{ color: C.muted }}>Puts a <b>BladeOS POS</b> icon on the desktop. It opens straight on the POS, full screen, and receipts print at once with no print window. It also finds the receipt printer (e.g. Licon LP100) and makes it the default.</p>
+          <Btn icon={Download} busy={busy} onClick={() => run(download)}>Download till icon (Windows)</Btn>
+          {!windows && <p className="text-xs" style={{ color: C.muted }}>Download this on the till computer itself.</p>}
+          <ol className="space-y-2 text-xs" data-icon-steps>
+            <Step n={1}>Open <b>BladeOS-Till-Setup</b> from Downloads. If the browser asks, choose <b>Keep</b>.</Step>
+            <Step n={2}>If Windows says “Windows protected your PC”, click <b>More info → Run anyway</b>.</Step>
+            <Step n={3}>Answer Y if BladeOS should open when the computer starts. The <b>BladeOS POS</b> icon is now on the desktop.</Step>
+            <Step n={4}>Sign in once in the window that opens. From then on, just double-click the icon.</Step>
+          </ol>
+          {got && <p role="status" className="text-xs" style={{ color: C.ok }}><Check size={13} className="inline mr-1" />Downloaded — open it from the Downloads folder.</p>}
+        </section>
+        <section className="rounded-xl p-4 space-y-2 border" style={{ borderColor: C.border }}>
+          <h4 className="font-semibold">Phone, tablet or office computer</h4>
+          {installed ? <p className="text-xs" style={{ color: C.ok }}>BladeOS is already installed on this device.</p>
+            : canInstall ? <Btn variant="ghost" icon={Sparkles} onClick={async () => { await window.__bladeosInstall?.(); }}>Install BladeOS app</Btn>
+            : <p className="text-xs" style={{ color: C.muted }}>{ios ? "In Safari, tap Share, then Add to Home Screen."
+              : android ? "In Chrome, tap ⋮, then Add to Home screen (or Install app)."
+              : "In Chrome or Edge, open the browser menu ⋮ → Cast, save and share (Chrome) or Apps (Edge) → Install BladeOS."}</p>}
+        </section>
+      </div>
+    </Modal>
   );
 }
 

@@ -6,7 +6,7 @@ About 20 minutes per till. Everything below is done once.
 
 | Device | How it connects | Notes |
 |---|---|---|
-| Receipt printer (80 mm or 58 mm thermal) | USB with its Windows driver (most common) | Prints silently through the launcher |
+| Receipt printer (80 mm or 58 mm thermal, e.g. Licon LP100) | USB — direct (WebUSB) or through its Windows driver | Found automatically; silent printing from the desktop icon |
 | Receipt printer on a COM port | USB-serial, RS-232 or Bluetooth (shows as COMx) | BladeOS sends ESC/POS itself: auto-cut, QR code, drawer kick |
 | Cash drawer | RJ11 cable into the receipt printer | Opens through the printer (driver setting, or ESC/POS mode) |
 | Barcode scanner (1D/2D, USB or Bluetooth) | Acts as a keyboard | No driver. Enter, Tab or no suffix all work |
@@ -27,25 +27,35 @@ Not supported from a browser: network (LAN/Wi-Fi IP) receipt printers without a 
    - Cutter: cut after each page.
 5. **Settings → Display**: note the main screen's resolution (e.g. 1366 × 768). The customer screen should be arranged to the **right** of the main screen.
 
-## 2. Launcher
+## 2. Desktop icon (one download)
 
-1. Copy `BladeOS-POS.bat` to the till (e.g. the Desktop).
-2. Right-click → **Edit**: check `PRIMARY_WIDTH` matches the main screen width (the address is already set to https://bladesbutchers-pos.up.railway.app).
-3. Double-click it. The till opens full screen and the customer screen opens on the second display.
-4. To install it: open Command Prompt in that folder and run `BladeOS-POS.bat install`. This adds a **BladeOS POS** icon
-   on the Desktop and in the Start menu, and starts BladeOS with Windows.
-5. Sign in as the cashier. (Press **Alt+F4** to close the till window.)
-6. Each cashier sets an **Offline PIN** once on this till: account menu (top right) → *Offline PIN (this till)*.
+1. On the till, open BladeOS in Chrome or Edge and sign in (any account, e.g. the cashier).
+2. Account menu (top right) → **Desktop icon** → **Download till icon (Windows)**.
+3. Open **BladeOS-Till-Setup** from Downloads. If Chrome asks, choose **Keep**; if Windows says "Windows protected your PC", click **More info → Run anyway**. No admin rights needed.
+4. It finds Chrome/Edge, finds the receipt printer (Licon LP100 and other 80/58 mm thermal printers), makes it the
+   **default printer** and stops Windows changing it, checks for the scanner, and adds a **BladeOS POS** icon to the
+   Desktop and Start menu. Answer **Y** to open BladeOS when the till starts.
+5. The icon opens the POS full screen with silent printing, and the customer screen on the second monitor if there is
+   one. Sign in once in that window. (Press **Alt+F4** to close the till window.)
+6. Each cashier sets an **Offline PIN** once on this till: account menu → *Offline PIN (this till)*.
 7. POS → **Devices**: set the **Till number** (1, 2, …) — it starts the receipt numbers used offline (T1-000123).
+
+`BladeOS-POS.bat` in this folder does the same by hand (edit the address and screen width, then `BladeOS-POS.bat install`).
 
 Back-office PCs, laptops and phones don't need the launcher: open BladeOS in Chrome or Edge and use the account menu →
 **Install BladeOS app** (or the install icon in the address bar; on a phone, *Add to Home screen*).
 
 ## 3. In BladeOS (POS → Devices)
 
-1. **Receipt printer**: *Windows printer*, 80 mm, *Print automatically* on → **Print test page**. It must print without a dialog and cut. If a dialog appears, BladeOS wasn't started from the launcher.
-2. For a COM-port printer instead: choose *ESC/POS on a COM port* → **Choose COM port** → **Print test page** → **Open cash drawer**.
-3. **Barcode scanner**: click the test box and scan any product. It should say *Scanner detected*. Scan a scale label: it should name the product and weight.
+1. **Receipt printer** is found automatically — the POS header shows **Printer: USB ✓**, **COM ✓** or **Windows**.
+   - *Licon LP100 on USB*: tap **Devices → Find printer** once and pick the printer. BladeOS then prints, cuts and opens
+     the drawer itself, and reconnects on its own whenever the printer is plugged in.
+   - If the LP100's Windows driver is installed, Windows owns the USB port: BladeOS prints through Windows instead (the
+     setup made it the default printer). Both work; nothing to choose.
+   - A printer on a COM port: **Find printer** → cancel the USB list → pick the COM port.
+   - **Print test page** and **Open cash drawer** to check.
+2. Leave *Connected as* on **Find automatically**. Pick USB / COM / Windows only to force one.
+3. **Barcode scanner**: nothing to set up. Scan any product at the POS: the header turns to **Scanner ✓**. (Devices → scanner test box shows the details.) Scan a scale label: it should name the product and weight.
 4. **Customer screen**: if it didn't open on its own, press *Customer screen* on the POS, allow window placement, or drag it to the second display and press F11.
 5. Business Setup → Products: scan each packed product's barcode into its **Barcode** box. Business Setup → Receipt & Till: address, phone, TIN, and whether your label scale prints **weight** or **price**.
 
@@ -78,7 +88,8 @@ Back-office PCs, laptops and phones don't need the launcher: open BladeOS in Chr
 
 | Problem | Fix |
 |---|---|
-| Print dialog appears | Start BladeOS with the launcher. Close all Chrome windows first. |
+| Print dialog appears | Start BladeOS from the **BladeOS POS** desktop icon (account menu → Desktop icon to get it). |
+| Header says Printer: Windows on the LP100 | Normal when its Windows driver is installed. Or uninstall the driver and tap Devices → Find printer for direct USB. |
 | Receipt prints tiny or on A4 | Receipt printer isn't the default, or paper size isn't set to 80 mm in Printing preferences |
 | Drawer doesn't open | Drawer cable must go into the printer's DK/RJ11 port; enable "open cash drawer" in the driver |
 | Scanner types into the wrong box | Click the POS search box once, or close any open dialog; scanned codes always go to the search box when nothing else is focused |

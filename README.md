@@ -117,9 +117,13 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Super Admin).
   - *X / Z reports:* managers print an X report mid-shift (from the POS or Approvals → cash-ups); the cashier gets the Z report
     after the blind close. Both show sales, discounts by reason, tenders, refunds, cleared tickets and cash.
   - *Shortcuts:* F2 search · F4 pay · F8 hold · F9 discount · Enter = next sale.
-  - *Hardware* (`src/lib/hardware.js`, **POS → Devices**, setup guide in `pos-setup/README.md`): receipt printers through the
-    Windows driver (silent printing via the `pos-setup/BladeOS-POS.bat` launcher) or ESC/POS on a COM port (auto-cut, QR,
-    cash-drawer kick on cash sales); 80 or 58 mm; auto-print and copies; USB/Bluetooth barcode scanners (Enter, Tab or no
+  - *Hardware* (`src/lib/hardware.js`, **POS → Devices**, setup guide in `pos-setup/README.md`): the receipt printer is
+    **found automatically** — ESC/POS over USB (WebUSB, printer class; allowed once with *Find printer*, then reconnects
+    by itself), a COM port (Web Serial), or the Windows default printer through its driver (fallback when Windows owns the
+    port). Direct printing cuts, prints the QR code and kicks the drawer on cash sales. The POS header shows printer and
+    scanner status. The till's **desktop icon** comes from *account menu → Desktop icon* (`server/till.js`: a Windows setup
+    file that sets the receipt printer as default and adds a full-screen, silent-printing *BladeOS POS* shortcut with the
+    customer screen on the second monitor). 80 or 58 mm; auto-print and copies; USB/Bluetooth barcode scanners (Enter, Tab or no
     suffix) with a scanner test; scale on its own port; and a customer screen on the terminal's second display showing
     items, total and change. Settings are per till.
   - Refunds give back what was actually paid per item (after discounts). Till cash-up and bank reconciliation count each
@@ -184,7 +188,7 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Super Admin).
 
 ## Layout
 ```
-pos-setup/  BladeOS-POS.bat (Windows till launcher + `install` for Desktop/Start-menu icon) · README.md (Licon / till hardware setup)
+pos-setup/  BladeOS-POS.bat (manual alternative to account menu → Desktop icon) · README.md (Licon / till hardware setup)
 server/   index.js · pos.js (sales, discounts, tender, held tickets, X/Z) · routes.js (writes) · controls.js (approvals, refunds) · operations.js (tills, temps, counts, trace, limits)
           business.js (purchase orders, payment reconciliation, HACCP) · backup.js + restore.js (backups)
           state.js (reads/KPIs) · stock.js (lots, FEFO) · auth.js + totp.js (sign-in, sessions) · seed.js · migrate.js

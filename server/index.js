@@ -12,6 +12,7 @@ import { bootstrap } from "./seed.js";
 import { apiRouter } from "./routes.js";
 import { errorHandler } from "./util.js";
 import { startScheduler } from "./backup.js";
+import { tillRoutes } from "./till.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(__dirname, "..", "dist");
@@ -42,9 +43,9 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false,
   strictTransportSecurity: { maxAge: 31536000, includeSubDomains: true },
 }));
-// Only the hardware the till really uses: USB serial (printer, scale) here, nothing else for anyone.
+// Only the hardware the till really uses: USB and USB-serial (receipt printer, scale), nothing else for anyone.
 app.use((_req, res, next) => {
-  res.set("Permissions-Policy", "serial=(self), camera=(), microphone=(), geolocation=(), payment=(), usb=()");
+  res.set("Permissions-Policy", "serial=(self), usb=(self), camera=(), microphone=(), geolocation=(), payment=()");
   next();
 });
 // Every request gets an id (echoed to the browser) so a cashier's "something went wrong" can be found in the logs.
@@ -76,6 +77,7 @@ app.get("/health", async (_req, res) => {
 });
 
 app.use("/api", apiRouter());
+tillRoutes(app);   // the till's desktop icon (Windows setup file)
 
 if (fs.existsSync(path.join(DIST, "index.html"))) {
   app.use("/assets", express.static(path.join(DIST, "assets"), { immutable: true, maxAge: "1y", fallthrough: false }));

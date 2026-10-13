@@ -10,8 +10,8 @@ import { QUICK_CASH } from "../shared/permissions.js";
 import { SectionHeader, Btn, Modal, Field, Input, Select, Empty, useBusy } from "../components/ui.jsx";
 import { ScaleReader } from "../lib/scale.jsx";
 import { TillBar, AddCustomerModal } from "./Sales.jsx";
-import { DevicesModal } from "./Devices.jsx";
-import { printBlocks, receiptBlocks, reportBlocks, loadDevices, customerDisplay, openCustomerDisplay } from "../lib/hardware.js";
+import { DevicesModal, HardwareStatus } from "./Devices.jsx";
+import { printBlocks, receiptBlocks, reportBlocks, loadDevices, customerDisplay, openCustomerDisplay, markScannerSeen } from "../lib/hardware.js";
 
 const AREAS = ["Wuse II", "Garki", "Maitama", "Gwarinpa", "Jabi", "Asokoro", "Life Camp", "Utako", "Kubwa", "Lokogoma"];
 const VOID_REASONS = ["Customer changed mind", "Wrong items keyed", "Price query", "Customer couldn't pay", "Training"];
@@ -99,7 +99,7 @@ export function POSView({ data, actions, permit }) {
     b.last = now;
     clearTimeout(b.timer);
     if (devices.scannerSuffix === "none" || devices.scannerSuffix === "auto") {
-      if (b.fast >= 5 && /^\d{6,14}$/.test(v.trim())) b.timer = setTimeout(() => { burst.current.fast = 0; handleCodeRef.current(v); }, 120);
+      if (b.fast >= 5 && /^\d{6,14}$/.test(v.trim())) b.timer = setTimeout(() => { burst.current.fast = 0; markScannerSeen(); handleCodeRef.current(v); }, 120);
     }
   };
   const handleCodeRef = useRef(() => {});
@@ -210,6 +210,7 @@ export function POSView({ data, actions, permit }) {
     <div>
       <SectionHeader eyebrow="Point of Sale" title="POS Terminal" action={
         <div className="flex gap-1.5">
+          <HardwareStatus onOpen={() => setModal("devices")} />
           <Btn small variant="ghost" icon={Monitor} onClick={() => openCustomerDisplay()}>Customer screen</Btn>
           <Btn small variant="ghost" icon={Settings2} onClick={() => setModal("devices")}>Devices</Btn>
           <TillBar till={data.tills?.mine} actions={actions} label="till" canX={permit("till.review")} />
@@ -218,11 +219,11 @@ export function POSView({ data, actions, permit }) {
         <div className="flex flex-col lg:grid lg:grid-cols-5 gap-4 lg:h-[calc(100vh-215px)] pb-20 lg:pb-0">
           {/* ---------------- products */}
           <div className="lg:col-span-3 flex flex-col rounded-2xl border overflow-hidden lg:h-full" style={{ background: "#fff", borderColor: C.border }}>
-            <form onSubmit={(e) => { e.preventDefault(); handleCode(search); }} className="p-3 border-b flex gap-2" style={{ borderColor: C.line }}>
+            <form onSubmit={(e) => { e.preventDefault(); if (burst.current.fast >= 4) markScannerSeen(); handleCode(search); }} className="p-3 border-b flex gap-2" style={{ borderColor: C.line }}>
               <div className="relative flex-1">
                 <ScanLine size={16} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: C.muted }} />
                 <input ref={searchRef} value={search} onChange={(e) => onSearchChange(e.target.value)} aria-label="Scan or search"
-                  onKeyDown={(e) => { if (e.key === "Tab" && search.trim() && devices.scannerSuffix !== "enter") { e.preventDefault(); clearTimeout(burst.current.timer); handleCode(search); } }}
+                  onKeyDown={(e) => { if (e.key === "Tab" && search.trim() && devices.scannerSuffix !== "enter") { e.preventDefault(); clearTimeout(burst.current.timer); if (burst.current.fast >= 4) markScannerSeen(); handleCode(search); } }}
                   placeholder="Scan barcode, type PLU or name (F2)" autoComplete="off" inputMode="search"
                   className="f-body w-full text-sm rounded-lg pl-9 pr-8 py-2.5 border outline-none focus:ring-2" style={{ borderColor: C.input, "--tw-ring-color": C.goldLight }} />
                 {search && <button type="button" aria-label="Clear search" onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2 p-1"><X size={14} style={{ color: C.muted }} /></button>}

@@ -1,18 +1,23 @@
-// Counter hardware for a Windows POS terminal (e.g. Licon all-in-one: touch screen + customer screen,
-// 80 mm thermal receipt printer, cash drawer on the printer's RJ11 port, USB barcode scanner, optional scale).
+// Counter hardware for a Windows POS terminal (e.g. Licon all-in-one + Licon LP100 80 mm thermal printer,
+// cash drawer on the printer's RJ11 port, USB barcode scanner, optional scale).
 //
-// Receipt printer — two ways to print:
-//   "browser"  any printer Windows has a driver for (USB, LAN, Bluetooth). Prints through a hidden frame; with the
-//              BladeOS POS launcher (Chrome/Edge --kiosk-printing) it prints straight to the default printer, no dialog.
-//              The cash drawer opens through the printer driver ("open cash drawer before printing").
-//   "escpos"   a printer on a COM / virtual-COM port (USB-serial, RS-232, Bluetooth SPP): BladeOS sends ESC/POS
-//              commands itself over Web Serial — fastest, auto-cut, prints the QR code, and kicks the drawer.
+// Receipt printer — found automatically ("auto", the default). At print time BladeOS uses the first that works:
+//   1. USB direct   an ESC/POS printer on USB (WebUSB, printer class 7) — auto-cut, QR code, drawer kick.
+//   2. COM port     an ESC/POS printer on a COM / virtual-COM port (Web Serial: USB-serial, RS-232, Bluetooth SPP).
+//   3. Windows      the Windows default printer through its driver (prints through a hidden frame; silent with the
+//                   BladeOS till icon, which starts the browser with --kiosk-printing). The driver opens the drawer.
+// A printer the browser was allowed to use once (one tap on "Find printer") reconnects by itself whenever it's
+// plugged in. On Windows, when the Licon driver owns the USB port, direct USB is refused and step 3 takes over.
+//
+// Barcode scanner — USB/Bluetooth scanners type like a keyboard. A burst of fast keystrokes is a scan, so the
+// scanner is detected the first time anything is scanned; no setup.
 // Settings are per terminal (this browser), not per user.
 import QRCode from "qrcode";
 
 const KEY = "bladeos.devices";
 export const DEFAULT_DEVICES = {
-  printMode: "browser",          // "browser" | "escpos"
+  v: 2,
+  printMode: "auto",             // "auto" | "usb" | "escpos" (COM port) | "browser" (Windows driver)
   paper: 80,                     // 80 | 58 (mm)
   autoPrint: true,               // print a receipt when a sale completes
   copies: 1,
@@ -23,7 +28,12 @@ export const DEFAULT_DEVICES = {
   tillNo: "1",                   // this till's number, printed on receipts made offline (T1-000123)
 };
 export function loadDevices() {
-  try { return { ...DEFAULT_DEVICES, ...(JSON.parse(localStorage.getItem(KEY)) || {}) }; } catch { return { ...DEFAULT_DEVICES }; }
+  try {
+    const saved = JSON.parse(localStorage.getItem(KEY)) || {};
+    // Tills set up before auto-detection had "browser" as the default: move them to automatic.
+    if (!saved.v && saved.printMode === "browser") saved.printMode = "auto";
+    return { ...DEFAULT_DEVICES, ...saved, v: 2 };
+  } catch { return { ...DEFAULT_DEVICES }; }
 }
 export function saveDevices(d) {
   try { localStorage.setItem(KEY, JSON.stringify(d)); } catch { /* private window: lasts this session */ }
@@ -234,6 +244,7 @@ export const serialSupported = () => typeof navigator !== "undefined" && "serial
 export async function choosePrinterPort() {
   const port = await navigator.serial.requestPort();
   rememberPort("printer", port);
+  window.dispatchEvent(new Event("bladeos-hardware"));
   return portInfo(port);
 }
 async function writeSerial(bytes, baud) {
@@ -249,30 +260,143 @@ async function writeSerial(bytes, baud) {
   }
 }
 
+/* ---------------------------------------------------------------- ESC/POS over WebUSB */
+export const usbSupported = () => typeof navigator !== "undefined" && "usb" in navigator;
+const USB_KEY = "bladeos.usbPrinter";
+const usbSaved = () => { try { return JSON.parse(localStorage.getItem(USB_KEY)); } catch { return null; } };
+const isPrinterDevice = (d) => (d.deviceClass === 7) || (d.configurations || []).some((c) => c.interfaces.some((i) => i.alternates.some((a) => a.interfaceClass === 7)));
+const usbName = (d) => [d.manufacturerName, d.productName].filter(Boolean).join(" ").trim() || "USB receipt printer";
+let usbBlocked = false;    // Windows' own printer driver holds the port: print through Windows instead (this session)
+let usbOut = null;         // { dev, ep } once opened
+
+/** The allowed USB printer that is plugged in now (no prompt). */
+export async function usbPrinter() {
+  if (!usbSupported()) return null;
+  const want = usbSaved();
+  const devs = await navigator.usb.getDevices().catch(() => []);
+  return devs.find((d) => want && d.vendorId === want.vendorId && d.productId === want.productId) || devs.find(isPrinterDevice) || null;
+}
+/** One tap, once per till: the browser lists only printers. Afterwards it reconnects on its own. */
+export async function pairUsbPrinter() {
+  const dev = await navigator.usb.requestDevice({ filters: [{ classCode: 7 }] });
+  try { localStorage.setItem(USB_KEY, JSON.stringify({ vendorId: dev.vendorId, productId: dev.productId, name: usbName(dev) })); } catch { /* ignore */ }
+  usbBlocked = false; usbOut = null;
+  window.dispatchEvent(new Event("bladeos-hardware"));
+  return usbName(dev);
+}
+async function openUsb(dev) {
+  if (usbOut?.dev === dev && dev.opened) return usbOut.ep;
+  if (!dev.opened) await dev.open();
+  if (!dev.configuration) await dev.selectConfiguration(1);
+  let pick = null;
+  for (const i of dev.configuration.interfaces) {
+    for (const a of i.alternates) {
+      const ep = a.endpoints.find((e) => e.direction === "out" && e.type === "bulk");
+      if (ep && (!pick || a.interfaceClass === 7)) pick = { i, a, ep };
+    }
+  }
+  if (!pick) throw new Error("This USB device has no printer connection.");
+  if (!pick.i.claimed) await dev.claimInterface(pick.i.interfaceNumber);
+  if (pick.i.alternates.length > 1) await dev.selectAlternateInterface(pick.i.interfaceNumber, pick.a.alternateSetting).catch(() => {});
+  usbOut = { dev, ep: pick.ep.endpointNumber };
+  return usbOut.ep;
+}
+async function writeUsb(bytes) {
+  const dev = await usbPrinter();
+  if (!dev) throw new Error("The USB receipt printer isn't connected — check the cable and power.");
+  try {
+    const ep = await openUsb(dev);
+    for (let i = 0; i < bytes.length; i += 4096) await dev.transferOut(ep, bytes.slice(i, i + 4096));
+  } catch (e) {
+    usbOut = null;
+    // Windows: the printer's driver owns the port. Not an error at the till — Windows prints instead.
+    if (e?.name === "SecurityError" || e?.name === "NetworkError" || /access denied|claim/i.test(e?.message || "")) usbBlocked = true;
+    throw e;
+  }
+}
+
+/* ---------------------------------------------------------------- which printer, right now */
+/**
+ * What this till will print on: { kind: "usb" | "serial" | "windows", name, direct }.
+ * Never prompts. Used by the POS status and by printBlocks in automatic mode.
+ */
+export async function detectPrinter() {
+  const d = loadDevices();
+  const mode = d.printMode;
+  if ((mode === "auto" || mode === "usb") && !usbBlocked) {
+    const dev = await usbPrinter().catch(() => null);
+    if (dev) return { kind: "usb", name: usbSaved()?.name || usbName(dev), direct: true };
+  }
+  if ((mode === "auto" || mode === "escpos") && serialSupported()) {
+    const r = roles();
+    // Automatic mode only uses a port that was chosen as the printer (never the scale's).
+    const port = (mode === "escpos" || r.printer) ? await portFor("printer").catch(() => null) : null;
+    if (port) return { kind: "serial", name: "Receipt printer (COM port)", direct: true };
+  }
+  return { kind: "windows", name: usbBlocked ? "Windows printer (driver)" : "Windows default printer", direct: false, usbBlocked };
+}
+
+/** Calls back whenever a printer is plugged in or out, so the till's status updates by itself. */
+export function watchHardware(cb) {
+  const h = () => { usbOut = null; cb(); };
+  const offs = [];
+  for (const api of [usbSupported() && navigator.usb, serialSupported() && navigator.serial].filter(Boolean)) {
+    try { api.addEventListener("connect", h); api.addEventListener("disconnect", h); offs.push(() => { api.removeEventListener("connect", h); api.removeEventListener("disconnect", h); }); } catch { /* ignore */ }
+  }
+  const ev = () => cb();
+  window.addEventListener("bladeos-hardware", ev);
+  window.addEventListener("bladeos-devices", ev);
+  return () => { offs.forEach((f) => f()); window.removeEventListener("bladeos-hardware", ev); window.removeEventListener("bladeos-devices", ev); };
+}
+
+/* ---------------------------------------------------------------- barcode scanner */
+const SCAN_KEY = "bladeos.scannerSeen";
+/** A scan was recognised (fast keystrokes): the scanner is connected. */
+export function markScannerSeen() {
+  try { localStorage.setItem(SCAN_KEY, String(Date.now())); } catch { /* ignore */ }
+  window.dispatchEvent(new Event("bladeos-hardware"));
+}
+export const scannerSeenAt = () => { try { return Number(localStorage.getItem(SCAN_KEY)) || null; } catch { return null; } };
+
 /* ---------------------------------------------------------------- one entry point for every printout */
 /**
- * print(blocks, { title, cash, copies }) — prints on this terminal's receipt printer the way Devices says.
- * Returns { ok, error? }. `cash` opens the drawer (ESC/POS mode; in browser mode the printer driver does it).
+ * print(blocks, { title, cash, copies }) — prints on this terminal's receipt printer, found automatically
+ * (or the way Devices says). Returns { ok, via, error? }. `cash` opens the drawer (direct printers; in Windows
+ * mode the printer driver does it).
  */
 export async function printBlocks(blocks, { title = "Receipt", cash = false, copies } = {}) {
   const d = loadDevices();
   const times = Math.max(1, Math.min(3, copies ?? d.copies ?? 1));
+  const esc = (i) => blocksToEscPos(blocks, { paper: d.paper, drawer: cash && d.drawerOnCash && i === 0 });
+  const viaWindows = async () => {
+    const html = await blocksToHtml(blocks, { paper: d.paper, title });
+    for (let i = 0; i < times; i++) await printHtml(html);
+    return { ok: true, via: "windows" };
+  };
   try {
-    if (d.printMode === "escpos" && serialSupported()) {
-      for (let i = 0; i < times; i++) await writeSerial(blocksToEscPos(blocks, { paper: d.paper, drawer: cash && d.drawerOnCash && i === 0 }), d.printerBaud);
-    } else {
-      const html = await blocksToHtml(blocks, { paper: d.paper, title });
-      for (let i = 0; i < times; i++) await printHtml(html);
+    const p = await detectPrinter();
+    if (p.kind === "usb") {
+      try { for (let i = 0; i < times; i++) await writeUsb(await esc(i)); window.dispatchEvent(new Event("bladeos-hardware")); return { ok: true, via: "usb" }; }
+      catch (e) { if (d.printMode === "usb" && !usbBlocked) throw e; window.dispatchEvent(new Event("bladeos-hardware")); }
+    } else if (p.kind === "serial") {
+      try { for (let i = 0; i < times; i++) await writeSerial(await esc(i), d.printerBaud); return { ok: true, via: "serial" }; }
+      catch (e) { if (d.printMode === "escpos") throw e; }
+    } else if (d.printMode === "usb" || d.printMode === "escpos") {
+      throw new Error(d.printMode === "usb" ? "The USB receipt printer isn't connected — check the cable, or tap Find printer in Devices." : "No receipt printer port chosen — open Devices and pick the printer's COM port.");
     }
-    return { ok: true };
+    return await viaWindows();
   } catch (e) {
     return { ok: false, error: e?.message || "Printing failed." };
   }
 }
 export async function openDrawer() {
   const d = loadDevices();
-  if (d.printMode !== "escpos" || !serialSupported()) return { ok: false, error: "The drawer opens through the printer driver in browser mode — print a receipt, or switch the printer to ESC/POS (COM port)." };
-  try { await writeSerial(drawerKick(), d.printerBaud); return { ok: true }; } catch (e) { return { ok: false, error: e.message }; }
+  const p = await detectPrinter();
+  try {
+    if (p.kind === "usb") { await writeUsb(drawerKick()); return { ok: true }; }
+    if (p.kind === "serial") { await writeSerial(drawerKick(), d.printerBaud); return { ok: true }; }
+  } catch (e) { if (!usbBlocked) return { ok: false, error: e.message }; }
+  return { ok: false, error: "The drawer opens through the Windows printer driver — it opens when a cash receipt prints. (In the driver's Printing preferences, set “Cash drawer: open before printing”.)" };
 }
 
 /* ======================================================================= customer display */
