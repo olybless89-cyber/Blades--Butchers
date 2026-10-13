@@ -3,6 +3,7 @@ import { can, ROLES, APPROVAL_PERMS, EXPIRY_WARN_DAYS } from "../src/shared/perm
 import { approvalLimits, tillSummary } from "./operations.js";
 import { fmtDate, fmtShort, fmtDateTime, round2 } from "./util.js";
 import { posState, businessProfile } from "./pos.js";
+import { emailMarketingState, emailNotifications } from "./email.js";
 import { backupsState, paymentsState, purchasesState, foodSafetyState, businessNotifications } from "./business.js";
 
 // SQL snippets — every "day" and "month" is measured in Lagos time.
@@ -197,7 +198,7 @@ async function orders(limit = 300, where = "TRUE") {
 
 async function customers() {
   const rows = await many(`
-    SELECT c.id, c.code, c.name, c.phone, c.area, c.marketing_ok,
+    SELECT c.id, c.code, c.name, c.phone, c.area, c.marketing_ok, c.email, c.address, c.birthday_month, c.birthday_day, c.unsubscribed_at,
       count(o.id)::int AS orders, COALESCE(sum(o.net_total), 0) AS spent, max(o.created_at) AS last,
       (SELECT array_agg(name) FROM (
          SELECT p.name FROM order_items oi JOIN orders o2 ON o2.id = oi.order_id JOIN products p ON p.sku = oi.product_sku
@@ -210,7 +211,8 @@ async function customers() {
     WHERE c.erased_at IS NULL
     GROUP BY c.id ORDER BY spent DESC, c.name`);
   return rows.map((c) => ({
-    id: c.id, code: c.code, name: c.name, phone: c.phone ?? "—", area: c.area ?? "—", marketingOk: c.marketing_ok, orders: c.orders, spent: c.spent,
+    id: c.id, code: c.code, name: c.name, phone: c.phone ?? "—", area: c.area ?? "—", marketingOk: c.marketing_ok, email: c.email ?? "", address: c.address ?? "",
+    birthdayMonth: c.birthday_month, birthdayDay: c.birthday_day, unsubscribed: !!c.unsubscribed_at, orders: c.orders, spent: c.spent,
     avg: c.orders ? Math.round(c.spent / c.orders) : 0, last: c.last ? fmtDate(c.last) : "No orders yet",
     favourites: c.favourites ?? [], history: (c.history ?? []).map((h) => ({ ...h, date: fmtDate(h.created_at) })),
   }));
@@ -533,7 +535,7 @@ async function approvals(roles, userId) {
 export async function buildState(user) {
   const r = user.roles;
   const s = { user: { id: user.id, name: user.name, email: user.email, role: user.role, roles: user.roles } };
-  const jobs = { meta: meta(), notifications: Promise.all([notifications(user), businessNotifications(user)]).then(([a, b]) => [...b.filter((n) => n.tone === "danger"), ...a, ...b.filter((n) => n.tone !== "danger")]) };
+  const jobs = { meta: meta(), notifications: Promise.all([notifications(user), businessNotifications(user), emailNotifications(user)]).then(([a, b, e]) => [...b.filter((n) => n.tone === "danger"), ...e, ...a, ...b.filter((n) => n.tone !== "danger")]) };
 
   if (can(r, "dashboard.view")) jobs.dashboard = dashboard();
   if (can(r, "inventory.view") || can(r, "pos.use")) jobs.inventory = inventory();
@@ -559,6 +561,7 @@ export async function buildState(user) {
   if (APPROVAL_PERMS.some((p) => can(r, p)) || can(r, "controls.manage")) jobs.limits = approvalLimits();
   if (can(r, "pos.use")) jobs.pos = posState(user);
   if (can(r, "backups.manage")) jobs.backups = backupsState();
+  if (can(r, "marketing.view")) jobs.emailMarketing = emailMarketingState();
   if (can(r, "payments.reconcile")) jobs.payments = paymentsState(user.id);
   if (can(r, "purchasing.view")) jobs.purchases = purchasesState(r);
   if (can(r, "haccp.complete") || can(r, "haccp.verify")) jobs.foodSafety = foodSafetyState();

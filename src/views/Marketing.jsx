@@ -1,5 +1,6 @@
 import React, { useState } from "react";
-import { Plus, Pencil, Check, Trash2, Download, CalendarDays } from "lucide-react";
+import { api } from "../lib/api.js";
+import { Plus, Pencil, Check, Trash2, Download, CalendarDays, Mail, Cake, Send, Copy, Settings2 } from "lucide-react";
 import { C, nairaFmt, exportCsv } from "../lib/theme.js";
 import { CONTENT_STATUSES } from "../shared/permissions.js";
 import { KpiCard, SectionHeader, Btn, StatusPill, Modal, Field, Input, Select, Card, Table, Empty, ICONS, useBusy } from "../components/ui.jsx";
@@ -49,6 +50,8 @@ export function MarketingView({ data, actions, permit }) {
         {campaigns.length > 0 && <Btn icon={Download} small variant="ghost" onClick={doExport}>Export</Btn>}
         {canEdit && <Btn icon={Plus} small onClick={() => setModal({ kind: "campaign" })}>Add Campaign</Btn>}
       </>} />
+
+      {data.emailMarketing && <EmailMarketing em={data.emailMarketing} canEdit={canEdit} actions={actions} />}
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
         <KpiCard label="Ad Spend" value={nairaFmt(spend)} icon={ICONS.DollarSign} />
@@ -184,6 +187,159 @@ function PostForm({ item, onClose, actions }) {
         </div>
         <Btn type="submit" icon={Check} full busy={busy} disabled={!valid}>{item ? "Save Changes" : "Add Post"}</Btn>
       </form>
+    </Modal>
+  );
+}
+
+/* ============================================================ CUSTOMER EMAILS + BIRTHDAYS */
+function EmailMarketing({ em, canEdit, actions }) {
+  const [compose, setCompose] = useState(false);
+  const [settings, setSettings] = useState(false);
+  const [list, setList] = useState(null);
+  const copyList = async (key) => {
+    try {
+      const rows = await api(`/marketing/audience/${key}`);
+      if (!rows.length) { actions.notify("Nobody in that group has an email and has agreed to marketing.", "error"); return; }
+      const text = rows.map((r) => r.email).join(", ");
+      try { await navigator.clipboard.writeText(text); actions.notify(`${rows.length} email${rows.length === 1 ? "" : "s"} copied — paste into the BCC box`); }
+      catch { setList(text); }
+    } catch (e) { actions.notify(e.message, "error"); }
+  };
+  const t = em.birthdaysToday;
+  return (
+    <div className="grid lg:grid-cols-5 gap-4 mb-6">
+      {compose && <ComposeEmail em={em} actions={actions} onClose={() => setCompose(false)} onCopy={copyList} />}
+      {settings && <BirthdaySettings em={em} actions={actions} onClose={() => setSettings(false)} />}
+      {list && (
+        <Modal title="Email list" onClose={() => setList(null)}>
+          <p className="f-body text-xs mb-2" style={{ color: C.muted }}>Copy these into the BCC box of your email.</p>
+          <textarea readOnly value={list} className="w-full h-40 f-mono text-xs rounded-lg border p-2" style={{ borderColor: C.input }} onFocus={(e) => e.target.select()} />
+        </Modal>
+      )}
+      <Card className="lg:col-span-2">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div className="flex items-center gap-2"><Cake size={18} style={{ color: C.burgundy }} /><h3 className="f-display text-base" style={{ color: C.ink }}>Birthdays</h3></div>
+          {canEdit && <Btn small variant="ghost" icon={Settings2} onClick={() => setSettings(true)}>Greeting</Btn>}
+        </div>
+        <div className="f-body text-xs mb-3" style={{ color: em.settings.birthdayAuto && em.configured ? C.ok : C.muted }} data-birthday-mode>
+          {em.settings.birthdayAuto && em.configured ? "Automatic: each birthday customer gets the greeting by email at 8:00." : em.settings.birthdayAuto ? "Automatic greetings are on, but email sending isn't set up yet." : "Automatic greetings are off."}
+        </div>
+        <div className="f-body text-[11px] uppercase tracking-wide mb-1.5" style={{ color: C.muted }}>Today</div>
+        {t.length === 0 ? <p className="f-body text-sm mb-3" style={{ color: C.muted }}>No birthdays today.</p> : (
+          <ul className="space-y-1.5 mb-3">
+            {t.map((c) => (
+              <li key={c.id} className="flex items-center justify-between gap-2 f-body text-sm" data-birthday-today>
+                <span className="truncate" style={{ color: C.ink }}>🎂 {c.name}</span>
+                <span className="text-[11px] shrink-0" style={{ color: c.greeted ? C.ok : C.muted }}>{c.greeted ? "Greeted ✓" : c.canEmail ? "Email ready" : c.phone ? `Call / WhatsApp ${c.phone}` : "No email or consent"}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="f-body text-[11px] uppercase tracking-wide mb-1.5" style={{ color: C.muted }}>Rest of {em.monthName}</div>
+        <p className="f-body text-xs" style={{ color: C.ink }}>{em.birthdaysMonth.length ? em.birthdaysMonth.map((c) => `${c.name} (${c.day})`).join(" · ") : "None recorded yet — add birthdays on customer profiles."}</p>
+      </Card>
+
+      <Card className="lg:col-span-3">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div className="flex items-center gap-2"><Mail size={18} style={{ color: C.burgundy }} /><h3 className="f-display text-base" style={{ color: C.ink }}>Customer emails</h3></div>
+          {canEdit && <Btn small icon={Send} onClick={() => setCompose(true)}>New email</Btn>}
+        </div>
+        {!em.configured && (
+          <p className="f-body text-xs mb-3 rounded-lg px-3 py-2" style={{ background: "#F6EEDD", color: C.ink }} data-email-setup>
+            Sending isn't set up yet. Add <span className="f-mono">RESEND_API_KEY</span> and <span className="f-mono">EMAIL_FROM</span> in Railway → Variables to send from here.
+            Meanwhile, <b>Copy emails</b> gives you the list for any email app.
+          </p>
+        )}
+        {em.configured && <p className="f-body text-xs mb-3" style={{ color: C.muted }}>Sending as <span className="f-mono">{em.from}</span>. Only customers who agreed get emails; each one has an unsubscribe link.</p>}
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-4">
+          {em.audiences.map((a) => (
+            <div key={a.key} className="rounded-lg px-3 py-2" style={{ background: C.cream }}>
+              <div className="f-mono text-lg font-semibold" style={{ color: C.ink }}>{a.count}</div>
+              <div className="f-body text-[11px] leading-tight" style={{ color: C.muted }}>{a.label}</div>
+              {canEdit && a.count > 0 && <button onClick={() => copyList(a.key)} className="f-body text-[11px] mt-1 inline-flex items-center gap-1 hover:underline" style={{ color: C.burgundy }}><Copy size={11} /> Copy emails</button>}
+            </div>
+          ))}
+        </div>
+        <div className="f-body text-[11px] uppercase tracking-wide mb-1.5" style={{ color: C.muted }}>Recently sent</div>
+        {em.history.length === 0 ? <p className="f-body text-sm" style={{ color: C.muted }}>Nothing sent yet.</p> : (
+          <ul className="space-y-1.5">
+            {em.history.slice(0, 5).map((h) => (
+              <li key={h.id} className="flex items-center justify-between gap-2 f-body text-xs">
+                <span className="min-w-0 truncate" style={{ color: C.ink }}>{h.at} · {h.kind === "birthday" ? "🎂 " : ""}{h.subject} <span style={{ color: C.muted }}>· {h.audience} · {h.who}</span></span>
+                <span className="shrink-0" style={{ color: h.failed ? C.danger : C.ok }}>{h.sent} sent{h.failed ? `, ${h.failed} failed` : ""}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function ComposeEmail({ em, actions, onClose, onCopy }) {
+  const [f, setF] = useState({ audience: "all", subject: "", body: "Hello {name},\n\n" });
+  const [busy, run] = useBusy();
+  const [err, setErr] = useState(null);
+  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }));
+  const aud = em.audiences.find((a) => a.key === f.audience);
+  const valid = f.subject.trim().length >= 3 && f.body.trim().length >= 10;
+  const send = (test) => run(async () => {
+    setErr(null);
+    try {
+      const r = await api("/marketing/email", { method: "POST", body: { ...f, test } });
+      actions.notify(test ? "Test sent to your own email" : `Email sent to ${r.sent} customer${r.sent === 1 ? "" : "s"}${r.failed ? ` (${r.failed} failed)` : ""}`);
+      await actions.refresh();
+      if (!test) onClose();
+    } catch (e) { setErr(e.message); }
+  });
+  return (
+    <Modal title="Email customers" onClose={onClose} wide>
+      <div className="space-y-4">
+        <Field label="Send to">
+          <Select value={f.audience} onChange={set("audience")}>{em.audiences.map((a) => <option key={a.key} value={a.key}>{a.label} ({a.count})</option>)}</Select>
+        </Field>
+        <Field label="Subject"><Input value={f.subject} onChange={set("subject")} maxLength={150} placeholder="Fresh goat meat in this weekend" /></Field>
+        <Field label="Message" hint="{name} becomes each customer's first name. Leave a blank line between paragraphs.">
+          <textarea value={f.body} onChange={set("body")} rows={8} maxLength={5000} className="w-full rounded-lg border px-3.5 py-2.5 f-body text-sm outline-none focus:ring-2"
+            style={{ borderColor: C.input, "--tw-ring-color": C.goldLight }} />
+        </Field>
+        <p className="f-body text-xs" style={{ color: C.muted }}>Your business name, address and an unsubscribe link are added at the bottom automatically.</p>
+        {err && <p className="f-body text-xs" style={{ color: C.danger }}>{err}</p>}
+        {em.configured ? (
+          <div className="flex flex-wrap gap-2">
+            <Btn variant="ghost" icon={Mail} busy={busy} disabled={!valid} onClick={() => send(true)}>Send me a test</Btn>
+            <Btn icon={Send} busy={busy} disabled={!valid || !aud?.count} onClick={() => send(false)}>Send to {aud?.count || 0} customer{aud?.count === 1 ? "" : "s"}</Btn>
+          </div>
+        ) : (
+          <Btn icon={Copy} disabled={!aud?.count} onClick={() => onCopy(f.audience)}>Copy {aud?.count || 0} email{aud?.count === 1 ? "" : "s"} for your email app</Btn>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function BirthdaySettings({ em, actions, onClose }) {
+  const [f, setF] = useState({ ...em.settings });
+  const [busy, run] = useBusy();
+  const save = () => run(async () => {
+    try { await api("/settings/email", { method: "PATCH", body: f }); actions.notify("Birthday greeting saved"); await actions.refresh(); onClose(); }
+    catch (e) { actions.notify(e.message, "error"); }
+  });
+  return (
+    <Modal title="Birthday greeting" onClose={onClose}>
+      <div className="space-y-4">
+        <label className="flex items-start gap-2.5 f-body text-sm cursor-pointer" style={{ color: C.ink }}>
+          <input type="checkbox" checked={f.birthdayAuto} onChange={(e) => setF((p) => ({ ...p, birthdayAuto: e.target.checked }))} className="mt-0.5 w-4 h-4" style={{ accentColor: C.burgundy }} aria-label="Send birthday greetings automatically" />
+          <span>Send automatically at 8:00 on each customer's birthday<span className="block text-xs" style={{ color: C.muted }}>Only to customers with an email who agreed to marketing. Once a year each.</span></span>
+        </label>
+        <Field label="Subject"><Input value={f.birthdaySubject} onChange={(e) => setF((p) => ({ ...p, birthdaySubject: e.target.value }))} maxLength={150} /></Field>
+        <Field label="Message" hint="{name} = first name, {business} = your business name">
+          <textarea value={f.birthdayBody} onChange={(e) => setF((p) => ({ ...p, birthdayBody: e.target.value }))} rows={6} maxLength={3000}
+            className="w-full rounded-lg border px-3.5 py-2.5 f-body text-sm outline-none focus:ring-2" style={{ borderColor: C.input, "--tw-ring-color": C.goldLight }} />
+        </Field>
+        {!em.configured && <p className="f-body text-xs" style={{ color: C.muted }}>Greetings start once email sending is set up (RESEND_API_KEY and EMAIL_FROM in Railway).</p>}
+        <Btn full icon={Check} busy={busy} disabled={f.birthdaySubject.trim().length < 3 || f.birthdayBody.trim().length < 10} onClick={save}>Save</Btn>
+      </div>
     </Modal>
   );
 }

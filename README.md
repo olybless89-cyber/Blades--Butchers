@@ -165,6 +165,14 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
   so renames and retirements survive redeploys.
 - **Suppliers:** a ledger of invoices and payments per supplier (balance, invoiced and paid this year, last 10 entries).
   Operations Managers can add suppliers and record invoices; only Owner/MD/Administrator can record payments, and never more than is owed.
+- **Customers & email marketing:** the customer form takes phone, email, birthday (day + month), area, delivery address and
+  marketing consent; details can be edited from the profile. *Marketing* shows today's and this month's birthdays and
+  **Customer emails**: write once, send to a group (everyone who agreed, birthdays today / this month, bought in the last
+  30 days, not in 60 days) with each first name filled in, or *Send me a test*. Birthday greetings can go out
+  automatically at 8:00 (once a year each). Only customers who agreed and haven't unsubscribed are ever emailed; every
+  email has an unsubscribe link and one-click unsubscribe headers, and unsubscribing is recorded in the audit trail.
+  Sending uses [Resend](https://resend.com): set `RESEND_API_KEY` and `EMAIL_FROM` (e.g. `Blades & Butchers <hello@bladesbutchers.com>`,
+  on a domain verified in Resend) — and `PUBLIC_URL` if the app has a custom domain. Without them, *Copy emails* gives the list for any email app.
 - **Marketing:** campaigns (spend, leads, orders, revenue → ROAS, feeding Reports and ButcherAI) and a dated content calendar.
 - **POS counter:** locations ticked *POS sells first* (Business Setup → Storage Locations) are drawn from before any
   other location, so renaming the shop counter doesn't change where sales come from.

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Plus, X, Download, Phone, MapPin, Search, UserPlus, Check, ArrowRight, Printer, Ban, Loader2, ShoppingCart, Undo2, Wallet, Lock, FileText, Trash2, Megaphone } from "lucide-react";
+import { Plus, X, Download, Phone, MapPin, Search, UserPlus, Check, ArrowRight, Printer, Ban, Loader2, ShoppingCart, Undo2, Wallet, Lock, FileText, Trash2, Megaphone, Mail, Cake, Pencil } from "lucide-react";
 import { C, nairaFmt, qtyFmt, initials, exportCsv } from "../lib/theme.js";
 import { api } from "../lib/api.js";
 import { ORDER_FLOW, REFUND_REASONS, RESTOCK_REASON } from "../shared/permissions.js";
@@ -268,7 +268,7 @@ export function CustomersView({ data, actions, permit }) {
   const [selected, setSelected] = useState(null);
   const [adding, setAdding] = useState(false);
   const filtered = q.trim()
-    ? customers.filter((c) => [c.name, c.phone, c.area, c.code].some((v) => String(v).toLowerCase().includes(q.trim().toLowerCase())))
+    ? customers.filter((c) => [c.name, c.phone, c.email, c.area, c.code].some((v) => String(v).toLowerCase().includes(q.trim().toLowerCase())))
     : customers;
   return (
     <div>
@@ -303,13 +303,15 @@ export function CustomersView({ data, actions, permit }) {
 
 function CustomerProfile({ customer, onClose, actions, permit }) {
   const [confirmErase, setConfirmErase] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [busy, run] = useBusy();
   if (!customer) return null;
   /** Subject access request: everything held about this customer, as a spreadsheet. */
   const download = () => exportCsv(`customer-${customer.code}.csv`, [
-    { record: "Customer", code: customer.code, name: customer.name, phone: customer.phone, area: customer.area, marketing: customer.marketingOk ? "Agreed" : "Not agreed", order: "", date: "", amount: "", items: "" },
-    ...customer.history.map((o) => ({ record: "Order", code: customer.code, name: "", phone: "", area: "", marketing: "", order: o.id, date: o.date, amount: o.amount, items: o.product })),
+    { record: "Customer", code: customer.code, name: customer.name, phone: customer.phone, email: customer.email, birthday: birthdayText(customer) || "", area: customer.area, address: customer.address, marketing: customer.marketingOk ? "Agreed" : "Not agreed", order: "", date: "", amount: "", items: "" },
+    ...customer.history.map((o) => ({ record: "Order", code: customer.code, name: "", phone: "", email: "", birthday: "", area: "", address: "", marketing: "", order: o.id, date: o.date, amount: o.amount, items: o.product })),
   ]);
+  if (editing) return <AddCustomerModal customer={customer} onClose={() => setEditing(false)} onSave={(body) => actions.updateCustomer(customer.id, body, `${body.name} saved`)} />;
   return (
     <Modal title={customer.name} onClose={onClose} wide>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
@@ -324,7 +326,10 @@ function CustomerProfile({ customer, onClose, actions, permit }) {
         <span className="f-mono text-xs">{customer.code}</span>
         {customer.phone !== "—" && <a href={`tel:${customer.phone.replace(/\s/g, "")}`} className="flex items-center gap-1.5 hover:underline"><Phone size={13} /> {customer.phone}</a>}
         {customer.area !== "—" && <span className="flex items-center gap-1.5"><MapPin size={13} /> {customer.area}, Abuja</span>}
-        <span className="flex items-center gap-1.5"><Megaphone size={13} /> {customer.marketingOk ? "Agreed to marketing" : "No marketing messages"}</span>
+        {customer.email && <a href={`mailto:${customer.email}`} className="flex items-center gap-1.5 hover:underline"><Mail size={13} /> {customer.email}</a>}
+        {birthdayText(customer) && <span className="flex items-center gap-1.5"><Cake size={13} /> {birthdayText(customer)}</span>}
+        {customer.address && <span className="flex items-center gap-1.5"><MapPin size={13} /> {customer.address}</span>}
+        <span className="flex items-center gap-1.5"><Megaphone size={13} /> {customer.unsubscribed ? "Unsubscribed from emails" : customer.marketingOk ? "Agreed to marketing" : "No marketing messages"}</span>
       </div>
       {customer.favourites.length > 0 && (<>
         <h4 className="f-body text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.muted }}>Favourite Products</h4>
@@ -353,6 +358,7 @@ function CustomerProfile({ customer, onClose, actions, permit }) {
         <h4 className="f-body text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: C.muted }}>Customer's data rights</h4>
         <div className="flex flex-wrap gap-2">
           <Btn small variant="ghost" icon={Download} onClick={download}>Download their data</Btn>
+          {permit?.("customers.edit") && <Btn small variant="ghost" icon={Pencil} onClick={() => setEditing(true)}>Edit details</Btn>}
           {permit?.("customers.edit") && (
             <Btn small variant="ghost" icon={Megaphone} busy={busy} onClick={() => run(() => actions.updateCustomer(customer.id, { marketingOk: !customer.marketingOk }, customer.marketingOk ? "Marketing consent withdrawn" : "Marketing consent recorded"))}>
               {customer.marketingOk ? "Withdraw marketing consent" : "Record marketing consent"}
@@ -374,34 +380,59 @@ function CustomerProfile({ customer, onClose, actions, permit }) {
   );
 }
 
-export function AddCustomerModal({ onClose, onSave, onCreated }) {
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [area, setArea] = useState("");
-  const [marketingOk, setMarketingOk] = useState(false);
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+export const birthdayText = (c) => (c.birthdayMonth && c.birthdayDay ? `${c.birthdayDay} ${MONTHS[c.birthdayMonth - 1]}` : null);
+
+/** Add or edit a customer: contact details, birthday (day + month) and marketing consent. */
+export function AddCustomerModal({ onClose, onSave, onCreated, customer }) {
+  const editing = !!customer;
+  const [f, setF] = useState({
+    name: customer?.name ?? "", phone: customer?.phone && customer.phone !== "—" ? customer.phone : "", email: customer?.email ?? "",
+    birthdayDay: customer?.birthdayDay ? String(customer.birthdayDay) : "", birthdayMonth: customer?.birthdayMonth ? String(customer.birthdayMonth) : "",
+    area: customer?.area && customer.area !== "—" ? customer.area : "", address: customer?.address ?? "", marketingOk: customer?.marketingOk ?? false,
+  });
+  const [error, setError] = useState(null);
   const [busy, run] = useBusy();
-  const phoneBad = phone && !/^[+\d][\d\s-]{6,19}$/.test(phone.trim());
+  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value }));
+  const phoneBad = f.phone && !/^[+\d][\d\s-]{6,19}$/.test(f.phone.trim());
+  const emailBad = f.email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(f.email.trim());
+  const bdBad = !!f.birthdayDay !== !!f.birthdayMonth;
   const submit = (e) => {
     e.preventDefault();
+    setError(null);
     run(async () => {
-      const r = await onSave({ name: name.trim(), phone: phone.trim(), area: area.trim() || undefined, marketingOk });
+      const r = await onSave({ name: f.name.trim(), phone: f.phone.trim(), email: f.email.trim(), area: f.area.trim(), address: f.address.trim(),
+        birthdayDay: f.birthdayDay ? Number(f.birthdayDay) : "", birthdayMonth: f.birthdayMonth ? Number(f.birthdayMonth) : "", marketingOk: f.marketingOk });
       if (r) { onCreated?.(r); onClose(); }
     });
   };
   return (
-    <Modal title="Add Customer" onClose={onClose}>
+    <Modal title={editing ? `Edit ${customer.name}` : "Add Customer"} onClose={onClose}>
       <form onSubmit={submit} className="space-y-4">
-        <Field label="Full name"><Input value={name} onChange={(e) => setName(e.target.value)} required minLength={2} maxLength={80} autoFocus /></Field>
-        <Field label="Phone" error={phoneBad ? "Check the number" : null}><Input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="0803 123 4567" /></Field>
-        <Field label="Area">
-          <Input list="cust-areas" value={area} onChange={(e) => setArea(e.target.value)} maxLength={60} placeholder="e.g. Wuse II" />
-          <datalist id="cust-areas">{AREAS.map((a) => <option key={a} value={a} />)}</datalist>
+        <Field label="Full name"><Input value={f.name} onChange={set("name")} required minLength={2} maxLength={80} autoFocus /></Field>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Field label="Phone" error={phoneBad ? "Check the number" : null}><Input type="tel" value={f.phone} onChange={set("phone")} placeholder="0803 123 4567" /></Field>
+          <Field label="Email" error={emailBad ? "Check the email" : null}><Input type="email" value={f.email} onChange={set("email")} maxLength={120} placeholder="name@example.com" /></Field>
+        </div>
+        <Field label="Birthday" hint="Day and month — for a birthday greeting" error={bdBad ? "Pick both the day and the month" : null}>
+          <div className="grid grid-cols-[5.5rem_1fr] gap-2">
+            <Select value={f.birthdayDay} onChange={set("birthdayDay")} aria-label="Birthday day"><option value="">Day</option>{Array.from({ length: 31 }, (_, i) => <option key={i} value={i + 1}>{i + 1}</option>)}</Select>
+            <Select value={f.birthdayMonth} onChange={set("birthdayMonth")} aria-label="Birthday month"><option value="">Month</option>{MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}</Select>
+          </div>
         </Field>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Field label="Area">
+            <Input list="cust-areas" value={f.area} onChange={set("area")} maxLength={60} placeholder="e.g. Wuse II" />
+            <datalist id="cust-areas">{AREAS.map((a) => <option key={a} value={a} />)}</datalist>
+          </Field>
+          <Field label="Delivery address"><Input value={f.address} onChange={set("address")} maxLength={200} placeholder="House, street" /></Field>
+        </div>
         <label className="flex items-start gap-2.5 f-body text-sm cursor-pointer" style={{ color: C.ink }}>
-          <input type="checkbox" checked={marketingOk} onChange={(e) => setMarketingOk(e.target.checked)} className="mt-0.5 w-4 h-4" style={{ accentColor: C.burgundy }} />
-          <span>Customer agrees to receive offers and news<span className="block text-xs" style={{ color: C.muted }}>Only tick if they said yes. They can change their mind any time.</span></span>
+          <input type="checkbox" checked={f.marketingOk} onChange={set("marketingOk")} className="mt-0.5 w-4 h-4" style={{ accentColor: C.burgundy }} />
+          <span>Customer agrees to receive offers, news and birthday greetings<span className="block text-xs" style={{ color: C.muted }}>By email or message. Only tick if they said yes — they can unsubscribe any time.</span></span>
         </label>
-        <Btn type="submit" icon={Check} full busy={busy} disabled={name.trim().length < 2 || phoneBad}>Save Customer</Btn>
+        {error && <p className="f-body text-xs" style={{ color: C.danger }}>{error}</p>}
+        <Btn type="submit" icon={Check} full busy={busy} disabled={f.name.trim().length < 2 || phoneBad || emailBad || bdBad}>{editing ? "Save changes" : "Save Customer"}</Btn>
       </form>
     </Modal>
   );

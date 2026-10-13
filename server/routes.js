@@ -7,6 +7,7 @@ import { buildState } from "./state.js";
 import { addStock, allocateStock, transferStock, returnAllocations } from "./stock.js";
 import { openTill, operationRoutes } from "./operations.js";
 import { businessRoutes } from "./business.js";
+import { emailRoutes } from "./email.js";
 import { posRoutes, recordPayment } from "./pos.js";
 import { ROLES, LEADERSHIP_ROLES, COMBINABLE_ROLES, ORDER_FLOW, can, PROCESSING_SKUS, CONTENT_STATUSES } from "../src/shared/permissions.js";
 import { ah, parse, audit, bad, notFound, conflict, HttpError, round2, round3, fmtDateTime } from "./util.js";
@@ -21,12 +22,13 @@ export function apiRouter() {
   // Mutations must be JSON — together with SameSite=Lax cookies this blocks cross-site form CSRF.
   r.use((req, res, next) => {
     // DELETE is exempt: browsers can't send it cross-site without a CORS preflight, and it has no body.
-    if (!["GET", "HEAD", "DELETE"].includes(req.method) && !req.is("application/json")) {
+    const formOk = req.path === "/public/unsubscribe";   // the unsubscribe page's own form, and mail apps' one-click unsubscribe
+    if (!["GET", "HEAD", "DELETE"].includes(req.method) && !req.is("application/json") && !formOk) {
       return next(new HttpError(415, "Requests must be JSON."));
     }
     // A browser always says where a request came from; refuse changes started by any other site.
     const origin = req.get("origin");
-    if (origin && !["GET", "HEAD"].includes(req.method)) {
+    if (origin && !["GET", "HEAD"].includes(req.method) && !formOk) {
       let host = null;
       try { host = new URL(origin).host; } catch { /* malformed → refused below */ }
       if (host !== req.get("host")) return next(new HttpError(403, "Request refused: it came from another website."));
@@ -304,18 +306,34 @@ export function apiRouter() {
   }));
 
   /* ------------------------------------------------------------ customers */
+  /** The details a customer gives at the counter. Birthday is day + month only (no year needed for greetings). */
+  const customerFields = {
+    name: z.string().trim().min(2).max(80),
+    phone: z.string().trim().regex(/^[+\d][\d\s-]{6,19}$/, "looks invalid").optional().or(z.literal("")),
+    email: z.string().trim().toLowerCase().email("looks invalid").max(120).optional().or(z.literal("")),
+    birthdayMonth: z.coerce.number().int().min(1).max(12).nullable().optional().or(z.literal("")),
+    birthdayDay: z.coerce.number().int().min(1).max(31).nullable().optional().or(z.literal("")),
+    area: z.string().trim().max(60).optional(),
+    address: z.string().trim().max(200).optional(),
+    marketingOk: z.boolean().optional(),
+  };
+  const birthday = (b) => {
+    const m = b.birthdayMonth || null, d = b.birthdayDay || null;
+    if (!m !== !d) throw bad("Give both the day and the month of the birthday, or neither.");
+    if (m && d > [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1]) throw bad("That day doesn't exist in that month.");
+    return [m, d];
+  };
+
   r.post("/customers", requirePerm("customers.edit"), ah(async (req, res) => {
-    const b = parse(z.object({
-      name: z.string().trim().min(2).max(80),
-      phone: z.string().trim().regex(/^[+\d][\d\s-]{6,19}$/, "looks invalid").optional().or(z.literal("")),
-      area: z.string().trim().max(60).optional(),
-      marketingOk: z.boolean().optional(),
-    }), req.body);
+    const b = parse(z.object(customerFields), req.body);
+    const [bm, bd] = birthday(b);
     const out = await tx(async (db) => {
+      if (b.email && (await db.query("SELECT 1 FROM customers WHERE lower(email) = $1 AND erased_at IS NULL", [b.email])).rows[0]) throw conflict("A customer with that email already exists.");
       const n = (await db.query("SELECT nextval('customer_code_seq') AS n")).rows[0].n;
       const { rows } = await db.query(
-        "INSERT INTO customers (code, name, phone, area, marketing_ok) VALUES ($1,$2,$3,$4,$5) RETURNING id, code, name",
-        [`CUST-${n}`, b.name, b.phone || null, b.area || null, !!b.marketingOk]
+        `INSERT INTO customers (code, name, phone, area, marketing_ok, email, birthday_month, birthday_day, address)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id, code, name`,
+        [`CUST-${n}`, b.name, b.phone || null, b.area || null, !!b.marketingOk, b.email || null, bm, bd, b.address || null]
       );
       await audit(db, req.user.id, `Added customer ${b.name}`, `${rows[0].code}${b.marketingOk ? ", agreed to marketing" : ""}`);
       return rows[0];
@@ -323,13 +341,30 @@ export function apiRouter() {
     res.status(201).json(out);
   }));
 
-  /** Marketing consent (NDPA 2023): recorded when given, withdrawn whenever the customer asks. */
+  /** Edit a customer's details; marketing consent is recorded when given and withdrawn whenever they ask (NDPA 2023). */
   r.patch("/customers/:id", requirePerm("customers.edit"), ah(async (req, res) => {
-    const b = parse(z.object({ marketingOk: z.boolean() }), req.body);
-    const { rows } = await query("UPDATE customers SET marketing_ok = $2 WHERE id = $1 AND erased_at IS NULL RETURNING code, name", [req.params.id, b.marketingOk]);
-    if (!rows[0]) throw notFound("Customer not found.");
-    await audit(null, req.user.id, `${b.marketingOk ? "Recorded marketing consent for" : "Withdrew marketing consent for"} ${rows[0].name}`, rows[0].code);
-    res.json({ ok: true });
+    const b = parse(z.object(customerFields).partial(), req.body);
+    const out = await tx(async (db) => {
+      const c = (await db.query("SELECT * FROM customers WHERE id = $1 AND erased_at IS NULL FOR UPDATE", [req.params.id])).rows[0];
+      if (!c) throw notFound("Customer not found.");
+      const touchBirthday = b.birthdayMonth !== undefined || b.birthdayDay !== undefined;
+      const [bm, bd] = touchBirthday ? birthday({ birthdayMonth: b.birthdayMonth ?? c.birthday_month, birthdayDay: b.birthdayDay ?? c.birthday_day, ...b }) : [c.birthday_month, c.birthday_day];
+      const email = b.email !== undefined ? b.email || null : c.email;
+      if (email && email !== c.email && (await db.query("SELECT 1 FROM customers WHERE lower(email) = $1 AND id <> $2 AND erased_at IS NULL", [email, c.id])).rows[0]) throw conflict("Another customer already has that email.");
+      const n = { name: b.name ?? c.name, phone: b.phone !== undefined ? b.phone || null : c.phone, area: b.area !== undefined ? b.area || null : c.area,
+        address: b.address !== undefined ? b.address || null : c.address, email, bm, bd, mk: b.marketingOk ?? c.marketing_ok };
+      await db.query(`UPDATE customers SET name=$2, phone=$3, area=$4, address=$5, email=$6, birthday_month=$7, birthday_day=$8, marketing_ok=$9,
+                        unsubscribed_at = CASE WHEN $9 THEN NULL ELSE unsubscribed_at END WHERE id=$1`,
+        [c.id, n.name, n.phone, n.area, n.address, n.email, n.bm, n.bd, n.mk]);
+      const ch = [
+        n.name !== c.name && "name", n.phone !== c.phone && "phone", n.email !== c.email && "email", n.area !== c.area && "area",
+        n.address !== c.address && "address", (n.bm !== c.birthday_month || n.bd !== c.birthday_day) && "birthday",
+      ].filter(Boolean);
+      if (n.mk !== c.marketing_ok) await audit(db, req.user.id, `${n.mk ? "Recorded marketing consent for" : "Withdrew marketing consent for"} ${n.name}`, c.code);
+      if (ch.length) await audit(db, req.user.id, `Updated customer ${n.name}`, `${c.code}: ${ch.join(", ")}`);
+      return { ok: true };
+    });
+    res.json(out);
   }));
 
   /** Right to erasure: the person's details go; their sales stay (tax records) without a name or number. */
@@ -337,7 +372,7 @@ export function apiRouter() {
     const out = await tx(async (db) => {
       const c = (await db.query("SELECT * FROM customers WHERE id = $1 FOR UPDATE", [req.params.id])).rows[0];
       if (!c || c.erased_at) throw notFound("Customer not found.");
-      await db.query("UPDATE customers SET name = 'Erased customer', phone = NULL, area = NULL, marketing_ok = FALSE, erased_at = now() WHERE id = $1", [c.id]);
+      await db.query("UPDATE customers SET name = 'Erased customer', phone = NULL, area = NULL, email = NULL, address = NULL, birthday_month = NULL, birthday_day = NULL, marketing_ok = FALSE, erased_at = now() WHERE id = $1", [c.id]);
       await db.query("UPDATE orders SET note = NULL WHERE customer_id = $1 AND note IS NOT NULL", [c.id]);
       await db.query("DELETE FROM pos_held WHERE customer_id = $1", [c.id]);
       await audit(db, req.user.id, "Erased a customer's personal data on request", c.code);
@@ -706,6 +741,7 @@ export function apiRouter() {
   controlRoutes(r);
   operationRoutes(r);
   businessRoutes(r);
+  emailRoutes(r);
   posRoutes(r);
 
   r.use((req, _res, next) => next(new HttpError(404, "Unknown API endpoint.")));

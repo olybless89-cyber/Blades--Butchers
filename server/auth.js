@@ -21,6 +21,8 @@ if (!SECRET || SECRET.length < 32) {
 }
 
 export const hashPassword = (pw) => bcrypt.hash(pw, 12);
+/** A short keyed fingerprint (unsubscribe links): can't be forged without the server secret. */
+export const sign = (text) => crypto.createHmac("sha256", SECRET).update(String(text)).digest("base64url").slice(0, 24);
 /** Short-lived signed tokens for one purpose (e.g. a manager's override at the till). Never accepted as a session. */
 export const signPurpose = (claims, ttl) => jwt.sign(claims, SECRET, { expiresIn: ttl });
 export function verifyPurpose(token, purpose) {
