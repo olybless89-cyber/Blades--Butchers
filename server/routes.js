@@ -9,7 +9,7 @@ import { openTill, operationRoutes } from "./operations.js";
 import { businessRoutes } from "./business.js";
 import { emailRoutes } from "./email.js";
 import { posRoutes, recordPayment } from "./pos.js";
-import { ROLES, LEADERSHIP_ROLES, COMBINABLE_ROLES, ORDER_FLOW, can, PROCESSING_SKUS, CONTENT_STATUSES } from "../src/shared/permissions.js";
+import { ROLES, LEADERSHIP_ROLES, SUPER_ADMIN, COMBINABLE_ROLES, ORDER_FLOW, can, PROCESSING_SKUS, CONTENT_STATUSES } from "../src/shared/permissions.js";
 import { ah, parse, audit, bad, notFound, conflict, HttpError, round2, round3, fmtDateTime } from "./util.js";
 
 const money = z.coerce.number().int().min(0).max(1e12);
@@ -669,9 +669,10 @@ export function apiRouter() {
 
   /* ------------------------------------------------------------ users */
   const extraRolesSchema = z.array(z.enum(COMBINABLE_ROLES)).max(4).optional();
+  // Leadership accounts (Super Admin, Owner, MD, Administrator) are granted and changed by the Super Admin only.
   const onlyOwnerFor = (actor, ...roles) => {
-    if (roles.some((r) => LEADERSHIP_ROLES.includes(r)) && actor.role !== "Owner") {
-      throw new HttpError(403, "Only an Owner can grant or change Owner, Managing Director or Administrator accounts.");
+    if (roles.some((r) => LEADERSHIP_ROLES.includes(r)) && actor.role !== SUPER_ADMIN) {
+      throw new HttpError(403, "Only the Super Admin can grant or change Super Admin, Owner, Managing Director or Administrator accounts.");
     }
   };
   const cleanExtras = (primary, extras = []) => {
@@ -704,15 +705,15 @@ export function apiRouter() {
       const extras = b.extraRoles !== undefined ? cleanExtras(role, b.extraRoles) : cleanExtras(role, LEADERSHIP_ROLES.includes(role) ? [] : u.extra_roles);
       const rolesChanged = role !== u.role || extras.join() !== (u.extra_roles || []).join();
       if (u.id === req.user.id && (b.active === false || rolesChanged)) throw bad("You can't deactivate or change the roles of your own account.");
-      // Never leave the business without an active Owner.
-      if (u.role === "Owner" && (b.active === false || role !== "Owner")) {
-        const owners = (await db.query("SELECT count(*)::int AS n FROM users WHERE role = 'Owner' AND active AND id <> $1", [u.id])).rows[0].n;
-        if (owners === 0) throw conflict("There must be at least one active Owner.");
+      // Never leave the system without an active Super Admin.
+      if (u.role === SUPER_ADMIN && (b.active === false || role !== SUPER_ADMIN)) {
+        const supers = (await db.query("SELECT count(*)::int AS n FROM users WHERE role = $2 AND active AND id <> $1", [u.id, SUPER_ADMIN])).rows[0].n;
+        if (supers === 0) throw conflict("There must be at least one active Super Admin.");
       }
       const reset = !!b.password;
       if (reset) checkPassword(b.password, u.email);
       if (b.resetMfa) {
-        if (u.id === req.user.id) throw bad("You can't reset your own two-step sign-in. Use a recovery code, or ask the Owner.");
+        if (u.id === req.user.id) throw bad("You can't reset your own two-step sign-in. Use a recovery code, or ask the Super Admin.");
         await db.query("UPDATE users SET totp_enabled = FALSE, totp_secret = NULL, totp_last_step = NULL, recovery_codes = '{}' WHERE id = $1", [u.id]);
       }
       await db.query(

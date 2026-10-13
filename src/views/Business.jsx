@@ -675,7 +675,7 @@ export function BackupsCard({ data, actions, permit }) {
           <p className="font-semibold" style={{ color: C.danger }}>Automatic off-site backups are off. {b.problem}</p>
           <p>Create a bucket with any S3-compatible storage (Cloudflare R2, Backblaze B2, AWS S3) in a different company from Railway, then add these Railway variables and redeploy:</p>
           <p className="f-mono">BACKUP_S3_ENDPOINT · BACKUP_S3_BUCKET · BACKUP_S3_ACCESS_KEY · BACKUP_S3_SECRET_KEY · BACKUP_S3_REGION · BACKUP_PASSPHRASE</p>
-          <p>Until then, also turn on Railway's own Postgres backups, and the Owner should download a copy weekly.</p>
+          <p>Until then, also turn on Railway's own Postgres backups, and the Super Admin should download a copy weekly.</p>
         </div>
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3">
@@ -712,7 +712,7 @@ export function BackupsCard({ data, actions, permit }) {
   );
 }
 
-/** Railway's own Postgres backups + a weekly, restore-checked, encrypted download kept outside Railway by the Owner. */
+/** Railway's own Postgres backups + a weekly, restore-checked, encrypted download kept outside Railway by the Super Admin. */
 function ManualBackupsCard({ b, actions, permit }) {
   const [busy, setBusy] = useState(false);
   const kb = (n) => (n == null ? "—" : n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
@@ -750,7 +750,7 @@ function ManualBackupsCard({ b, actions, permit }) {
         </>)}
       </div>
       <p className="f-body text-[11px] mb-2" style={{ color: C.muted }}>
-        Every Monday the Owner downloads a copy. Each file is test-restored before you get it. Keep it in two places, e.g. the office laptop and Google Drive, and keep the last 8.
+        Every Monday the Super Admin downloads a copy. Each file is test-restored before you get it. Keep it in two places, e.g. the office laptop and Google Drive, and keep the last 8.
       </p>
       {b.recent.filter((x) => x.storage === "download").length > 0 && (
         <div className="space-y-1">

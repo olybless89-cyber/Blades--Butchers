@@ -15,8 +15,8 @@ One Railway service serves both the API (`/api`) and the app.
 |---|---|
 | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
 | `JWT_SECRET` | output of `openssl rand -hex 32` |
-| `ADMIN_EMAIL` | the Owner's email |
-| `ADMIN_PASSWORD` | 8+ characters — temporary: BladeOS makes the Owner choose a new one at first sign-in |
+| `ADMIN_EMAIL` | the Super Admin's email (Jeffrey). On start-up, if there's no active Super Admin, this account is promoted |
+| `ADMIN_PASSWORD` | 8+ characters — temporary: BladeOS makes the Super Admin choose a new one at first sign-in |
 | `ADMIN_NAME` | e.g. `Jeffrey` |
 
 Backups (see *Backups* below):
@@ -31,7 +31,7 @@ Optional, only for automatic nightly off-site copies: `BACKUP_S3_ENDPOINT`, `BAC
 Do **not** set `NODE_ENV` — the start script sets it, and setting it at build time skips Vite.
 
 4. **Settings → Networking → Generate Domain.** On boot the server runs migrations,
-   creates reference data and the Owner account, then listens. `/health` checks the database.
+   creates reference data and the Super Admin account, then listens. `/health` checks the database.
 
 ### First sign-in checklist
 A new install has the shop's range from bladesbutchers.com — 19 products, 16 with photos on the POS tiles (beef cuts, goat,
@@ -39,7 +39,7 @@ ram, chicken, whole bird, turkey, eggs, sausages, marinated meat, frozen packs, 
 locations and 2 ranches. Prices are starting prices: set the real ones in Business Setup → Products. Packaging items aren't
 stock-counted (always sellable); everything else needs stock received before it can be sold.
 The dashboard shows a *Getting started* card that ticks these off:
-1. Sign in — BladeOS asks the Owner to replace the temporary `ADMIN_PASSWORD`, then to turn on two-step sign-in
+1. Sign in — BladeOS asks the Super Admin to replace the temporary `ADMIN_PASSWORD`, then to turn on two-step sign-in
    (scan the QR code with Google Authenticator / Microsoft Authenticator / Authy) and save the 10 recovery codes.
 2. *Business Setup*: check every price and cost, add products, rename locations and ranches to match the site.
 3. *Suppliers*: add suppliers and any balance you already owe (as an invoice).
@@ -55,7 +55,7 @@ npm install
 npm run dev:api             # API on :3000 (auto-restarts)
 npm run dev                 # app on :5173, proxies /api
 ```
-Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
+Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Super Admin).
 
 ## How it works
 
@@ -63,8 +63,12 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
   (CSRF guard). 10 failed logins per 15 min → locked out temporarily. Passwords are 10+ characters; any password set by
   someone else is temporary and must be replaced at first sign-in. Idle sessions sign out after 30 minutes (shared tills).
 - **Roles & controls** (`src/shared/permissions.js`, enforced by the API, mirrored in the menu):
-  - *Least privilege:* 10 roles; staff covering two jobs get extra roles on one account (leadership roles stand alone).
-    Only an Owner can grant Owner, Managing Director or Administrator.
+  - *Super Admin* (Jeffrey): sees and does everything, and is the only role that sees **System** — Business Setup,
+    Roadmap and Administration — and downloads the weekly backup. There is always at least one active Super Admin.
+  - *Least privilege:* 11 roles; staff covering two jobs get extra roles on one account (leadership roles stand alone).
+    Only the Super Admin can grant Super Admin, Owner, Managing Director or Administrator.
+  - *Owner and MD* run the business (dashboard, reports, approvals above every limit, prices via Inventory, sales,
+    marketing) but don't see System: no Business Setup, Roadmap, staff accounts, audit trail or backups.
   - *Administrator is a system role:* staff accounts, locations/ranches, audit trail — no prices, money or sales.
   - *Cost visibility:* cost prices, stock value at cost and livestock purchase costs only reach Owner, MD and Operations Manager.
     Ranch staff register animals without a cost; management records it (flagged until done).
@@ -74,9 +78,9 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
   - *Refunds:* item-level, with reason codes. Delivered orders can't be cancelled — only refunded. Food safety: returned meat
     is written off; only a same-day counter sale rung up in error goes back into stock. All revenue figures are net of refunds.
 - **Operations controls** (`server/operations.js`):
-  - *Two-step sign-in* (TOTP, `server/totp.js`): mandatory for Owner, MD and Administrator; optional for staff. Secrets are
+  - *Two-step sign-in* (TOTP, `server/totp.js`): mandatory for Super Admin, Owner, MD and Administrator; optional for staff. Secrets are
     AES-256-GCM encrypted (key from `JWT_SECRET` — rotating it means re-enrolling). Codes can't be replayed; 10 single-use
-    recovery codes. The Owner/Administrator resets a lost phone under *Staff Accounts*; break-glass for the last Owner:
+    recovery codes. The Super Admin/Administrator resets a lost phone under *Staff Accounts*; break-glass for the last Super Admin:
     set `RESET_MFA_FOR=<email>`, redeploy, sign in, then remove the variable.
   - *Batches & use-by:* every unit of stock belongs to a lot (processing batch, supplier delivery). Sales take the counter
     first, then the earliest use-by date; expired stock can't be sold. *Trace Batch* lists where a batch is and every
@@ -93,7 +97,7 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
     checks overdue by 12 hours.
   - *Blind stock counts:* managers schedule; the counter never sees system figures; differences become correction
     requests for approval.
-  - *Approval limits* (Business Setup → Controls, Owner/MD): what an Operations Manager may approve for write-offs,
+  - *Approval limits* (Business Setup → Controls, set by the Super Admin): what an Operations Manager may approve for write-offs,
     refunds and till variances; above that, Owner or MD.
 - **Point of sale** (`server/pos.js`, `src/views/POS.jsx`) — built to the standard of retail POS systems:
   - *Scan or search:* one box takes a product barcode (EAN/UPC), a PLU, a name, or a **scale-printed label** (EAN-13
@@ -158,7 +162,7 @@ Scripts: `npm run db:migrate`, `npm run db:seed` (reference data + Owner).
   Cattle cuts go to the beef SKUs; goat → Goat Meat; sheep → Ram Meat.
 - **Dashboards, reports, notifications, ButcherAI** are computed from live data in Lagos time
   (`server/state.js`).
-- **Business Setup** (Owner, MD, Administrator): products, storage locations and ranches. Nothing is deleted — items are *retired*,
+- **Business Setup** (Super Admin, Administrator): products, storage locations and ranches. Nothing is deleted — items are *retired*,
   which hides them from pickers while history keeps them. A product retires once its stock is zero; a location once it's
   empty; a ranch once its animals are moved or processed. The 8 products that receive processing output can be renamed and
   repriced but not retired. A product's unit locks once stock has moved. The starting catalogue is created once,
@@ -185,7 +189,7 @@ server/   index.js · pos.js (sales, discounts, tender, held tickets, X/Z) · ro
           business.js (purchase orders, payment reconciliation, HACCP) · backup.js + restore.js (backups)
           state.js (reads/KPIs) · stock.js (lots, FEFO) · auth.js + totp.js (sign-in, sessions) · seed.js · migrate.js
 migrations/  numbered .sql files, applied once each on boot
-src/      App.jsx (shell) · views/ (Home.jsx = the home page) · components/ · lib/ · shared/permissions.js
+src/      App.jsx (shell) · views/ · components/ · lib/ · shared/permissions.js
 ```
 
 ## Speed and reliability
@@ -223,11 +227,11 @@ src/      App.jsx (shell) · views/ (Home.jsx = the home page) · components/ ·
 - **Backups (chosen set-up: Railway + weekly download):**
   1. *Railway's own Postgres backups* — Railway → Postgres service → **Backups**: turn on the daily schedule. Covers
      mistakes, bad updates and accidental deletion.
-  2. *A weekly copy outside Railway* — every Monday the Owner opens *Administration → Backups → Download weekly backup*.
+  2. *A weekly copy outside Railway* — every Monday the Super Admin opens *Administration → Backups → Download weekly backup*.
      BladeOS makes a consistent copy of every table, encrypts it (AES-256-GCM, key from `BACKUP_PASSPHRASE`, 12+
      characters), **restore-tests that exact file** in a throw-away schema (every row and link checked), and only then
      hands it over, with its fingerprint (sha256) recorded in the audit trail. Keep each file in two places (office laptop +
-     Google Drive) and keep the last 8. A reminder appears for the Owner after 7 days, and for Administrators after 14.
+     Google Drive) and keep the last 8. A reminder appears for the Super Admin after 7 days, and for Administrators after 14.
   Set only `BACKUP_PASSPHRASE` on Railway, and keep it written down somewhere safe outside Railway — without it the
   files can't be opened. (Optional later: add the `BACKUP_S3_*` variables to switch to automatic nightly off-site copies
   with monthly restore tests — the screen changes to *Back up now / Run restore test*.)
@@ -235,10 +239,10 @@ src/      App.jsx (shell) · views/ (Home.jsx = the home page) · components/ ·
   (`--list` lists copies, `--key=<name>` picks one, or pass a downloaded weekly `.bdb` file — the usual case). Restore into a new Postgres service
   first if you want to inspect before switching over. Keep the same `JWT_SECRET`, or everyone re-enrols two-step sign-in.
 - **Schema changes:** add `migrations/002_*.sql`; it runs automatically on next deploy.
-- **Forgotten password / lost phone:** an Owner/Administrator resets it under *Administration → Staff Accounts*
-  (Administrators can't reset leadership accounts — only the Owner can).
+- **Forgotten password / lost phone:** the Super Admin or an Administrator resets it under *Administration → Staff Accounts*
+  (Administrators can't reset leadership accounts — only the Super Admin can).
 - **Daily routine:** managers set a till approval PIN once (account menu); opening checks before trading;  log cold-room and freezer temperatures twice a
   day; reconcile yesterday's transfers and card takings to the bank and terminal; receive deliveries against purchase orders;
   closing clean-down; close tills and sign off cash-ups; write off anything past its use-by date.
   **Weekly:** blind count per location, pest-control and equipment checklists, verify the week's food-safety records.
-  **Weekly (Monday):** Owner downloads the weekly backup and files it in two places.
+  **Weekly (Monday):** Super Admin downloads the weekly backup and files it in two places.

@@ -597,7 +597,7 @@ function LoginScreen({ onLogin, pending = 0 }) {
               <p>BladeOS is the internal operations system of Blades &amp; Butchers, for authorised staff only. Use is recorded.</p>
               <p><b>Staff:</b> your name, work email, role, sign-ins and the actions you take are recorded for security, cash and stock control, and the audit trail.</p>
               <p><b>Customers:</b> name, phone, delivery area and purchases are kept only to take and deliver orders, issue receipts and refunds, and trace a batch if food safety requires it. Marketing messages go only to customers who agreed. Card numbers are never stored.</p>
-              <p>Sales records are kept for six years for tax. Customers can ask to see, correct or erase their details, and staff can ask the Owner. This follows the Nigeria Data Protection Act 2023.</p>
+              <p>Sales records are kept for six years for tax. Customers can ask to see, correct or erase their details, and staff can ask management. This follows the Nigeria Data Protection Act 2023.</p>
             </div>
           </Modal>
         )}

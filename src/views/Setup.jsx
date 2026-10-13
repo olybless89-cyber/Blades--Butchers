@@ -88,7 +88,7 @@ export function SetupView({ data, actions, permit }) {
           </Table>
           <p className="f-body text-xs px-5 py-3 border-t flex items-center gap-1.5" style={{ color: C.muted, borderColor: C.line }}>
             <Lock size={11} style={{ color: C.gold }} /> Processing batches stock these products, so they can be renamed or repriced but not retired.
-            A product can be retired once its stock is zero.{!canProducts && " Products and prices are managed by the Owner or Managing Director."}
+            A product can be retired once its stock is zero.{!canProducts && " Products and prices are managed by the Owner, Managing Director or Super Admin."}
           </p>
         </Card>
       )}

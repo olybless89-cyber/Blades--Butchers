@@ -556,7 +556,7 @@ export async function businessNotifications(user) {
         const late = days == null || days >= WEEKLY_DAYS * 2;
         if (owner || late) out.push({ icon: "AlertTriangle", tone: late ? "danger" : "warn", route: "admin",
           text: (days == null ? "No backup has been downloaded yet" : `Weekly backup is due — last downloaded ${Math.floor(days)} days ago`)
-            + (owner ? ". Administration → Backups → Download weekly backup." : ". Ask the Owner to download it.") });
+            + (owner ? ". Administration → Backups → Download weekly backup." : ". Ask the Super Admin to download it.") });
       }
     } else if (!cfg.ready) out.push({ icon: "AlertTriangle", tone: "danger", route: "admin", text: `Automatic off-site backups are off — ${cfg.problem}` });
     else {

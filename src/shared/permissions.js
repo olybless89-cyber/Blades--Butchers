@@ -8,6 +8,7 @@
 //     approved by another. Nobody can approve their own request. Only Owner/MD post directly.
 
 export const ROLES = [
+  "Super Admin",
   "Owner",
   "Managing Director",
   "Operations Manager",
@@ -21,7 +22,10 @@ export const ROLES = [
 ];
 
 /** Roles that can't be combined with others, and that only an Owner can grant. */
-export const LEADERSHIP_ROLES = ["Owner", "Managing Director", "Administrator"];
+export const LEADERSHIP_ROLES = ["Super Admin", "Owner", "Managing Director", "Administrator"];
+/** The platform's system owner: sees and can do everything, and is the only one who sees the System section
+ *  (Business Setup, Roadmap, Administration) besides the Administrator. Only a Super Admin grants leadership roles. */
+export const SUPER_ADMIN = "Super Admin";
 /** Roles that can be held together on one account (e.g. Cashier + Storekeeper). */
 export const COMBINABLE_ROLES = ROLES.filter((r) => !LEADERSHIP_ROLES.includes(r));
 
@@ -86,14 +90,18 @@ export const PERMISSIONS = {
   "marketing.view":         [...EXEC, "Marketing Manager"],
   "marketing.edit":         [...EXEC, "Marketing Manager"],
 
-  // System
-  "setup.manage":           [...EXEC, "Administrator"],               // locations, ranches (products need products.edit)
-  "users.manage":           ["Owner", "Administrator"],
-  "audit.view":             [...EXEC, "Administrator"],
-  "controls.manage":        EXEC,                                      // approval limits
-  "backups.manage":         ["Owner", "Administrator"],               // backup status, back up now, restore test
-  "backups.download":       ["Owner"],                                 // a full copy of the data leaves the building
+  // System — the System section (Business Setup, Roadmap, Administration) is for the Super Admin and the Administrator,
+  // not the Owner or MD. Owner/MD still change prices (Inventory → Edit product) and approve above every limit.
+  "setup.manage":           ["Administrator"],                          // Business Setup: products, locations, ranches, receipt, limits
+  "users.manage":           ["Administrator"],                          // staff accounts (leadership roles: Super Admin only)
+  "audit.view":             ["Administrator"],
+  "controls.manage":        EXEC,                                      // approve above every limit (limits are set in Business Setup)
+  "backups.manage":         ["Administrator"],                          // backup status, back up now, restore test
+  "backups.download":       [],                                         // a full copy of the data leaves the building (Super Admin)
+  "system.roadmap":         [],                                         // Roadmap (Super Admin)
 };
+// The Super Admin holds every permission.
+for (const k of Object.keys(PERMISSIONS)) PERMISSIONS[k] = [SUPER_ADMIN, ...PERMISSIONS[k]];
 
 /** `roles` may be one role or an array of roles; any of them granting `perm` is enough. */
 export function can(roles, perm) {
@@ -127,7 +135,7 @@ export const ROUTE_PERMS = {
   marketing: "marketing.view",
   reports: "reports.view",
   setup: "setup.manage",
-  roadmap: null,
+  roadmap: "system.roadmap",
   admin: ["audit.view", "users.manage"],
 };
 

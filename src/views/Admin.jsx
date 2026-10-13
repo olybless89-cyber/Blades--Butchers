@@ -126,10 +126,10 @@ function UserModal({ target, me, onClose, actions }) {
   const [password, setPassword] = useState("");
   const [busy, run] = useBusy();
   const self = target?.id === me.id;
-  const isOwner = me.role === "Owner";
-  // Only an Owner can grant (or change) Owner, Managing Director and Administrator accounts.
-  const roleOptions = isOwner ? ROLES : ROLES.filter((r) => !LEADERSHIP_ROLES.includes(r));
-  const locked = target && LEADERSHIP_ROLES.includes(target.role) && !isOwner;
+  const isSuper = me.role === "Super Admin";
+  // Only the Super Admin grants (or changes) Super Admin, Owner, Managing Director and Administrator accounts.
+  const roleOptions = isSuper ? ROLES : ROLES.filter((r) => !LEADERSHIP_ROLES.includes(r));
+  const locked = target && LEADERSHIP_ROLES.includes(target.role) && !isSuper;
   const leader = LEADERSHIP_ROLES.includes(role);
   const extraOptions = COMBINABLE_ROLES.filter((r) => r !== role);
   const cleanExtras = leader ? [] : extras.filter((r) => r !== role);
@@ -157,7 +157,7 @@ function UserModal({ target, me, onClose, actions }) {
 
   return (
     <Modal title={isNew ? "Add User" : `Edit ${target.name}`} onClose={onClose}>
-      {locked ? <p className="f-body text-sm" style={{ color: C.muted }}>Only an Owner can change Owner, Managing Director or Administrator accounts.</p> : (
+      {locked ? <p className="f-body text-sm" style={{ color: C.muted }}>Only the Super Admin can change Super Admin, Owner, Managing Director or Administrator accounts.</p> : (
         <form onSubmit={submit} className="space-y-4">
           <Field label="Full name"><Input value={name} onChange={(e) => setName(e.target.value)} required maxLength={80} /></Field>
           <Field label="Email"><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required disabled={!isNew} autoComplete="off" /></Field>

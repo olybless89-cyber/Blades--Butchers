@@ -92,27 +92,47 @@ export async function seedWebsiteCatalogue() {
   });
 }
 
-/** Creates the first Owner from ADMIN_EMAIL / ADMIN_PASSWORD if there are no users yet. */
+/** Creates the first account (the Super Admin) from ADMIN_EMAIL / ADMIN_PASSWORD if there are no users yet. */
 export async function ensureOwner() {
   const { rows } = await query("SELECT count(*)::int AS n FROM users");
   if (rows[0].n > 0) return;
   const email = process.env.ADMIN_EMAIL;
   const password = process.env.ADMIN_PASSWORD;
   if (!email || !password || password.length < 8) {
-    console.warn("\n⚠️  No users exist yet. Set ADMIN_EMAIL and ADMIN_PASSWORD (8+ chars) and redeploy to create the first Owner account.\n");
+    console.warn("\n⚠️  No users exist yet. Set ADMIN_EMAIL and ADMIN_PASSWORD (8+ chars) and redeploy to create the first (Super Admin) account.\n");
     return;
   }
   // ADMIN_PASSWORD lives in the hosting dashboard, so it's treated as temporary and must be replaced at first sign-in.
-  await query("INSERT INTO users (name, email, role, password_hash, must_change_password) VALUES ($1, lower($2), 'Owner', $3, TRUE)",
-    [process.env.ADMIN_NAME || "Owner", email, await hashPassword(password)]);
-  console.log(`Created Owner account: ${email}`);
+  await query("INSERT INTO users (name, email, role, password_hash, must_change_password) VALUES ($1, lower($2), 'Super Admin', $3, TRUE)",
+    [process.env.ADMIN_NAME || "Super Admin", email, await hashPassword(password)]);
+  console.log(`Created Super Admin account: ${email}`);
 }
 
-/** Called on every boot: reference data (idempotent) + first Owner. Business data is entered by staff. */
+/**
+ * The system always has a Super Admin. On an existing install with none, the ADMIN_EMAIL account
+ * (the person who set BladeOS up) is promoted. They sign in again under the new role.
+ */
+export async function ensureSuperAdmin() {
+  await tx(async (db) => {
+    await db.query("SELECT pg_advisory_xact_lock(727277)");
+    if ((await db.query("SELECT 1 FROM users WHERE role = 'Super Admin' AND active")).rows[0]) return;
+    const email = process.env.ADMIN_EMAIL;
+    if (!email) { console.warn("⚠️  No active Super Admin. Set ADMIN_EMAIL to the account to promote, and redeploy."); return; }
+    const u = (await db.query("SELECT id, role FROM users WHERE email = lower($1) AND active", [email])).rows[0];
+    if (!u) { console.warn(`⚠️  No active Super Admin, and no active account for ADMIN_EMAIL (${email}).`); return; }
+    await db.query("UPDATE users SET role = 'Super Admin', extra_roles = '{}', updated_at = now() WHERE id = $1", [u.id]);
+    await db.query("UPDATE user_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", [u.id]);
+    await db.query("INSERT INTO audit_log (action, detail) VALUES ($1, $2)", [`Promoted ${email.toLowerCase()} to Super Admin`, `was ${u.role} (ADMIN_EMAIL, on start-up)`]);
+    console.log(`Promoted ${email} to Super Admin.`);
+  });
+}
+
+/** Called on every boot: reference data (idempotent) + first account + Super Admin. Business data is entered by staff. */
 export async function bootstrap() {
   await seedReference();
   await seedWebsiteCatalogue();
   await ensureOwner();
+  await ensureSuperAdmin();
   const { breakGlassMfa } = await import("./auth.js");
   await breakGlassMfa();
 }
